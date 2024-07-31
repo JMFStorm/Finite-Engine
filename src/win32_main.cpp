@@ -49,9 +49,13 @@ static_assert(sizeof(double) * CHAR_BIT == 64, "double is not 64 bits");
 // ---------
 // Structs
 
+struct Camera2D {
+    DirectX::XMFLOAT2 position;
+    f32 zoom; // how many tiles can see vertically
+};
+
 struct MatrixBufferType {
-    DirectX::XMMATRIX projectionMatrix;
-    DirectX::XMMATRIX viewMatrix;
+    DirectX::XMMATRIX viewProjectionMatrix;
     DirectX::XMMATRIX modelMatrix;
 };
 
@@ -94,24 +98,21 @@ struct Vertex {
 // Function declarations
 
 /**
- * @brief Print a message to debug output.
- *
- * @param message Message to print.
- */
-void DebugMessage(char* message);
-
-/**
  * @brief Stop application execution and display a message to the user.
  *
  * Apply debugging breakpoint if DEBUG -flag is set.
- *
- * @param message Message to display to user.
  */
 void ErrorMessageAndBreak(char* message);
+
+void DebugMessage(char* message);
 
 void LoadTextureFromFilepath(Texture* texture, char* filepath);
 
 void RegisterViewportWindowClass(HINSTANCE hInstance);
+
+bool IsKeyPressed(int key);
+
+bool IsWindowFocused(HWND window_handle);
 
 // ---------
 // Globals
@@ -142,6 +143,11 @@ OPENFILENAMEW open_filename_struct;
 const wchar_t* viewport_window_class_name = L"ViewportWindowClass";
 const wchar_t* window_class_name = L"MyWindowClass";
 const wchar_t* window_title = L"Finite Engine";
+
+Camera2D viewport_camera = {
+    .position = {0, 0},
+    .zoom = 10.0f,
+};
 
 // --------------------------
 // Function implementations
@@ -230,11 +236,18 @@ void ErrorMessageAndBreak(char* message) {
 #endif
 }
 
+bool IsWindowFocused(HWND window_handle) {
+    HWND foregroundWindow = GetForegroundWindow();
+    return (foregroundWindow == window_handle);
+}
+
 void DebugMessage(char* message) {
+#ifdef DEBUG
     const int size = 258;
     wchar_t wide_message[size];
     MultiByteToWideChar(CP_UTF8, 0, message, -1, wide_message, size);
     OutputDebugStringW(wide_message);
+#endif
 }
 
 LRESULT CALLBACK ViewportWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
@@ -280,9 +293,16 @@ void CheckShaderCompileError(HRESULT hr, ID3DBlob* error_blob) {
     ErrorMessageAndBreak((char*)"ERROR from: CheckDirecXError()");
 }
 
+bool IsKeyPressed(int key) {
+    SHORT state = GetAsyncKeyState(key);
+    return (state & 0x8000) != 0;
+}
+
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_CREATE: {
+
+            // ---------------
             // Select menu 1
             {
                 HWND hComboBox = CreateWindowW(
@@ -297,6 +317,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 SendMessageW(hComboBox, CB_ADDSTRING, 0, (LPARAM)L"Blue");
             }
 
+            // ---------------
             // Select menu 2
             {
                 HWND hComboBox2 = CreateWindowW(
@@ -348,7 +369,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             break;
         }
-        case WM_COMMAND:
+        case WM_COMMAND: {
             switch (HIWORD(wParam)) {
                 case CBN_SELCHANGE: {
                     HWND hComboBox = (HWND)lParam;
@@ -377,6 +398,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
                             break;
                         }
+
                         case ID_COMBOBOX2: {
                             HWND hComboBox = (HWND)lParam;
                             int itemIndex = SendMessageW(hComboBox, CB_GETCURSEL, 0, 0);
@@ -386,7 +408,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                                 SendMessageW(hComboBox, CB_GETLBTEXT, itemIndex, (LPARAM)selectedItem);
                                 MessageBox(hwnd, selectedItem, L"Item Selected 2", MB_OK);
                             }
-
                             break;
                         }    
                     }
@@ -426,6 +447,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
                     break;
                 }
+
                 case ID_EDIT_COPY:
                     MessageBox(hwnd, L"Copy selected", L"Menu", MB_OK);
                     break;
@@ -437,6 +459,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     break;
             }
             break;
+        }
+
         case WM_ERASEBKGND: { // Handle background erasing
             HDC hdc = (HDC)wParam;
             RECT rect;
@@ -447,9 +471,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             DeleteObject(hBrush);
             break;
         }
+
         case WM_SIZE: {
             break;
         }
+
         case WM_DESTROY:
             PostQuitMessage(0);
             break;
@@ -592,13 +618,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     // Create the vertex buffer
     {
         Vertex vertices[] = {
-            { DirectX::XMFLOAT3(-0.5f, 0.5f, 0.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 0.0f) },  // Top-left
-            { DirectX::XMFLOAT3(0.5f, -0.5f, 0.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 1.0f) },  // Bottom-right
-            { DirectX::XMFLOAT3(-0.5f, -0.5f, 0.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 1.0f) }, // Bottom-left
+            { DirectX::XMFLOAT3(-0.5f, 0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 0.0f) },  // Top-left
+            { DirectX::XMFLOAT3(0.5f, -0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 1.0f) },  // Bottom-right
+            { DirectX::XMFLOAT3(-0.5f, -0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 1.0f) }, // Bottom-left
 
-            { DirectX::XMFLOAT3(-0.5f, 0.5f, 0.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 0.0f) },  // Top-left
-            { DirectX::XMFLOAT3(0.5f, 0.5f, 0.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 0.0f) },   // Top-right
-            { DirectX::XMFLOAT3(0.5f, -0.5f, 0.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 1.0f) }   // Bottom-right
+            { DirectX::XMFLOAT3(-0.5f, 0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 0.0f) },  // Top-left
+            { DirectX::XMFLOAT3(0.5f, 0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 0.0f) },   // Top-right
+            { DirectX::XMFLOAT3(0.5f, -0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 1.0f) }   // Bottom-right
         };
 
         D3D11_BUFFER_DESC bufferDesc = {};
@@ -670,6 +696,34 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             }
         }
 
+        if (IsWindowFocused(main_window_handle)) {
+            if (IsKeyPressed(VK_LEFT)) {
+                DebugMessage((char*)"Left key is down!\n");
+                viewport_camera.position.x += 0.15f;
+            }
+
+            if (IsKeyPressed(VK_RIGHT)) {
+                DebugMessage((char*)"Right key is down!\n");
+                viewport_camera.position.x -= 0.15f;
+            }
+
+            if (IsKeyPressed(VK_UP)) {
+                DebugMessage((char*)"Up key is down!\n");
+                viewport_camera.position.y -= 0.15f;
+            }
+
+            if (IsKeyPressed(VK_DOWN)) {
+                DebugMessage((char*)"Down key is down!\n");
+                viewport_camera.position.y += 0.15f;
+            }
+        }
+
+        // -------------
+        // Scene logic
+        {
+            
+        }
+
         // -----------------------
         // Render viewport frame
         {
@@ -692,10 +746,22 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
             deviceContext->IASetVertexBuffers(0, 1, &vertexBuffer, &stride, &offset);
 
-            MatrixBufferType matrices;
-            matrices.projectionMatrix = DirectX::XMMatrixTranspose(DirectX::XMMatrixIdentity());
-            matrices.viewMatrix = DirectX::XMMatrixTranspose(DirectX::XMMatrixIdentity());
-            matrices.modelMatrix = DirectX::XMMatrixTranspose(DirectX::XMMatrixIdentity());
+            float viewWidth = viewport_camera.zoom / (4.0f/3.0f);
+            float viewHeight = viewport_camera.zoom;
+            float nearPlane = 0.0f;
+            float farPlane = 10.0f;
+
+            DirectX::XMMATRIX translationMatrix = DirectX::XMMatrixTranslation(viewport_camera.position.x, viewport_camera.position.y, 0.0f);
+            DirectX::XMMATRIX viewMatrix = DirectX::XMMatrixIdentity();
+            viewMatrix = XMMatrixMultiply(viewMatrix, translationMatrix);
+
+            DirectX::XMMATRIX projectionMatrix = DirectX::XMMatrixOrthographicLH(viewWidth, viewHeight, nearPlane, farPlane);
+            DirectX::XMMATRIX viewProjectionMatrix = DirectX::XMMatrixMultiply(viewMatrix, projectionMatrix);
+
+            MatrixBufferType matrices = {
+                .viewProjectionMatrix = DirectX::XMMatrixTranspose(viewProjectionMatrix),
+                .modelMatrix = DirectX::XMMatrixTranspose(DirectX::XMMatrixIdentity()),
+            };
 
             deviceContext->UpdateSubresource(matrixBuffer, 0, NULL, &matrices, 0, 0);
             deviceContext->VSSetConstantBuffers(0, 1, &matrixBuffer);
