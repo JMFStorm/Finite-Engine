@@ -49,13 +49,25 @@ static_assert(sizeof(double) * CHAR_BIT == 64, "double is not 64 bits");
 // ---------
 // Structs
 
+struct FrameInput {
+    bool mousewheel_up;
+    bool mousewheel_down;
+    bool arrow_up;
+    bool arrow_down;
+    bool arrow_left;
+    bool arrow_right;
+};
+
 struct Camera2D {
     DirectX::XMFLOAT2 position;
     f32 zoom; // how many tiles can see vertically
 };
 
-struct MatrixBufferType {
+struct ViewProjectionBufferType {
     DirectX::XMMATRIX viewProjectionMatrix;
+};
+
+struct ModelBufferType {
     DirectX::XMMATRIX modelMatrix;
 };
 
@@ -78,20 +90,15 @@ struct Texture {
     ID3D11ShaderResourceView* resource_view;
 };
 
-struct Sprite {
-    Texture texture;
-    Vec2 uv;
-};
-
-struct Tile {
-    char name[128];
-    Texture texture;
-};
-
-struct Vertex {
+struct TilemapTileVertex {
     DirectX::XMFLOAT3 position;
     DirectX::XMFLOAT4 color;
     DirectX::XMFLOAT2 uv;
+};
+
+struct TilemapTile {
+    Vec2 position;
+    Texture* texture;
 };
 
 // -----------------------
@@ -114,10 +121,21 @@ bool IsKeyPressed(int key);
 
 bool IsWindowFocused(HWND window_handle);
 
+void DrawTile(TilemapTile* tile);
+
 // ---------
 // Globals
 
-ID3D11Buffer* matrixBuffer;
+LARGE_INTEGER g_frequency;
+LARGE_INTEGER g_lastTime;
+
+u64 frame_counter = 0;
+f32 frame_delta = 0.0f;
+int mousewheel_delta = 0;
+FrameInput frame_input = {};
+
+ID3D11Buffer* cbuffer_view_projection = nullptr;
+ID3D11Buffer* cbuffer_model = nullptr;
 
 HWND viewport_window_handle;
 HWND main_window_handle;
@@ -132,10 +150,10 @@ D3D11_VIEWPORT render_viewport;
 Texture test_texture_01 = {};
 FLOAT clear_color[] = { 0.1f, 0.1f, 0.1f, 1.0f };
 
-ID3D11VertexShader* vertexShader;
-ID3D11PixelShader* pixelShader;
-ID3D11Buffer* vertexBuffer;
-ID3D11InputLayout* inputLayout;
+ID3D11VertexShader* tilemap_tile_vertex_shader;
+ID3D11PixelShader* tilemap_tile_pixel_shader;
+ID3D11Buffer* tilemap_tile_vertex_buffer;
+ID3D11InputLayout* tilemap_tile_input_layout;
 
 wchar_t open_filename_path[260] = {};
 OPENFILENAMEW open_filename_struct;
@@ -274,9 +292,6 @@ void RegisterViewportWindowClass(HINSTANCE hInstance) {
 /**
  * @brief Check last DirectX  Shader compilation error from HRESULT and recieves error message from ID3DBlob pointer.
  * If error was found, breaks execution and prints error message.
- * 
- * @param hr HRESULT to check.
- * @param error_blob ID3DBlob to check. 
  */
 void CheckShaderCompileError(HRESULT hr, ID3DBlob* error_blob) {
     if (SUCCEEDED(hr)) {
@@ -461,7 +476,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             break;
         }
 
-        case WM_ERASEBKGND: { // Handle background erasing
+        case WM_ERASEBKGND: {
             HDC hdc = (HDC)wParam;
             RECT rect;
             GetClientRect(hwnd, &rect);
@@ -469,6 +484,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             HBRUSH hBrush = CreateSolidBrush(LIGHT_GREY);
             FillRect(hdc, &rect, hBrush);
             DeleteObject(hBrush);
+            break;
+        }
+
+        case WM_MOUSEWHEEL: {
+            int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+            mousewheel_delta = delta;
             break;
         }
 
@@ -535,6 +556,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         );
     }
 
+    QueryPerformanceFrequency(&g_frequency);
+    QueryPerformanceCounter(&g_lastTime);
+
     // ----------------
     // Init DirectX 11
     {
@@ -599,25 +623,37 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
 
     // -------------------------------
-    // Create constant matrix buffer
+    // Create constant buffers
     {
-        D3D11_BUFFER_DESC matrixBufferDesc = {};
-        ZeroMemory(&matrixBufferDesc, sizeof(matrixBufferDesc));
-        matrixBufferDesc.Usage = D3D11_USAGE_DEFAULT;
-        matrixBufferDesc.ByteWidth = sizeof(MatrixBufferType);
-        matrixBufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-        matrixBufferDesc.CPUAccessFlags = 0;
+        HRESULT hresult;
 
-        HRESULT result = id3d11_device->CreateBuffer(&matrixBufferDesc, NULL, &matrixBuffer);
-        if (FAILED(result)) {
+        // View projection matrix
+        D3D11_BUFFER_DESC matrixBufferDesc = {};
+        matrixBufferDesc.Usage = D3D11_USAGE_DYNAMIC;
+        matrixBufferDesc.ByteWidth = sizeof(ViewProjectionBufferType);
+        matrixBufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        matrixBufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        hresult = id3d11_device->CreateBuffer(&matrixBufferDesc, nullptr, &cbuffer_view_projection);
+        if (FAILED(hresult)) {
             ErrorMessageAndBreak((char*)"CreateBuffer matrixBuffer failed!");
+        }
+        
+        // Model matrix
+        D3D11_BUFFER_DESC modelBufferDesc = {};
+        modelBufferDesc.Usage = D3D11_USAGE_DYNAMIC;
+        modelBufferDesc.ByteWidth = sizeof(ModelBufferType);
+        modelBufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        modelBufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        hresult = id3d11_device->CreateBuffer(&modelBufferDesc, nullptr, &cbuffer_model);
+        if (FAILED(hresult)) {
+            ErrorMessageAndBreak((char*)"CreateBuffer modelBuffer failed!");
         }
     }
 
     // --------------------------
     // Create the vertex buffer
     {
-        Vertex vertices[] = {
+        TilemapTileVertex vertices[] = {
             { DirectX::XMFLOAT3(-0.5f, 0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 0.0f) },  // Top-left
             { DirectX::XMFLOAT3(0.5f, -0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 1.0f) },  // Bottom-right
             { DirectX::XMFLOAT3(-0.5f, -0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 1.0f) }, // Bottom-left
@@ -636,7 +672,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         D3D11_SUBRESOURCE_DATA initData = {};
         initData.pSysMem = vertices;
 
-        HRESULT hr = id3d11_device->CreateBuffer(&bufferDesc, &initData, &vertexBuffer);
+        HRESULT hr = id3d11_device->CreateBuffer(&bufferDesc, &initData, &tilemap_tile_vertex_buffer);
         if (FAILED(hr)) {
             ErrorMessageAndBreak((char*)"CreateBuffer (vertex) failed!");
         }
@@ -647,20 +683,22 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
         hr = D3DCompileFromFile(
             L"G:\\projects\\game\\finite-engine-dev\\resources\\shaders\\shaders.hlsl",
-            nullptr, nullptr, "VSMain", "vs_5_0", 0, 0, &vsBlob, &error_blob);
+            nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
+            "VSMain", "vs_5_0", 0, 0, &vsBlob, &error_blob);
         CheckShaderCompileError(hr, error_blob);
 
         hr = D3DCompileFromFile(
             L"G:\\projects\\game\\finite-engine-dev\\resources\\shaders\\shaders.hlsl",
-            nullptr, nullptr, "PSMain", "ps_5_0", 0, 0, &psBlob, &error_blob);
+            nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
+            "PSMain", "ps_5_0", 0, 0, &psBlob, &error_blob);
         CheckShaderCompileError(hr, error_blob);
 
-        hr = id3d11_device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &vertexShader);
+        hr = id3d11_device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &tilemap_tile_vertex_shader);
         if (FAILED(hr)) {
             ErrorMessageAndBreak((char*)"CreateVertexShader failed!");
         }
 
-        hr = id3d11_device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &pixelShader);
+        hr = id3d11_device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &tilemap_tile_pixel_shader);
         if (FAILED(hr)) {
             ErrorMessageAndBreak((char*)"CreatePixelShader failed!");
         }
@@ -671,7 +709,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 28, D3D11_INPUT_PER_VERTEX_DATA, 0 },
         };
 
-        hr = id3d11_device->CreateInputLayout(layout, ARRAYSIZE(layout), vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &inputLayout);
+        hr = id3d11_device->CreateInputLayout(layout, ARRAYSIZE(layout), vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &tilemap_tile_input_layout);
         if (FAILED(hr)) {
             ErrorMessageAndBreak((char*)"CreateInputLayout failed!");
         }
@@ -685,92 +723,176 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     // -----------
     // Game loop
+    
     while (main_window_message.message != WM_QUIT) {
-
         // --------------
         // Handle input
         {
+            mousewheel_delta = 0;
+            frame_input = {0};
+
             if (PeekMessage(&main_window_message, NULL, 0, 0, PM_REMOVE)) {
                 TranslateMessage(&main_window_message);
                 DispatchMessageW(&main_window_message);
             }
+
+            if (IsWindowFocused(main_window_handle)) {
+                if (mousewheel_delta > 0) {
+                    frame_input.mousewheel_up = true;
+                }   
+                else if (mousewheel_delta < 0) {
+                    frame_input.mousewheel_down = true;
+                }
+
+                if (IsKeyPressed(VK_LEFT)) {
+                    frame_input.arrow_left = true;
+                }
+
+                if (IsKeyPressed(VK_RIGHT)) {
+                    frame_input.arrow_right = true;
+                }
+
+                if (IsKeyPressed(VK_UP)) {
+                    frame_input.arrow_up = true;
+                }
+
+                if (IsKeyPressed(VK_DOWN)) {
+                    frame_input.arrow_down = true;
+                }
+            }
         }
 
-        if (IsWindowFocused(main_window_handle)) {
-            if (IsKeyPressed(VK_LEFT)) {
-                DebugMessage((char*)"Left key is down!\n");
-                viewport_camera.position.x += 0.15f;
-            }
+        // -------------
+        // Query timer
+        {
+            LARGE_INTEGER currentTime;
+            QueryPerformanceCounter(&currentTime);
 
-            if (IsKeyPressed(VK_RIGHT)) {
-                DebugMessage((char*)"Right key is down!\n");
-                viewport_camera.position.x -= 0.15f;
-            }
+            LONGLONG elapsedTicks = currentTime.QuadPart - g_lastTime.QuadPart;
+            frame_delta = static_cast<f32>(elapsedTicks) / g_frequency.QuadPart;
+            g_lastTime = currentTime;
 
-            if (IsKeyPressed(VK_UP)) {
-                DebugMessage((char*)"Up key is down!\n");
-                viewport_camera.position.y -= 0.15f;
-            }
-
-            if (IsKeyPressed(VK_DOWN)) {
-                DebugMessage((char*)"Down key is down!\n");
-                viewport_camera.position.y += 0.15f;
-            }
+            // char buffer[32];
+            // f32 frame_delta_ms = frame_delta * 1000.0f;
+            // sprintf(buffer, "Delta in ms: %.6f\n", frame_delta_ms);
+            // DebugMessage(buffer);
         }
 
         // -------------
         // Scene logic
         {
-            
+            if (frame_input.mousewheel_down) {
+                viewport_camera.zoom += 1.0f;
+            }
+            else if (frame_input.mousewheel_up) {
+                viewport_camera.zoom -= 1.0f;
+                if (viewport_camera.zoom <= 1.0f) {
+                    viewport_camera.zoom = 1.0f;
+                }
+            }
+
+            if (frame_input.arrow_down) {
+                viewport_camera.position.y += 10.0f * frame_delta;
+            }
+            if (frame_input.arrow_up) {
+                viewport_camera.position.y -= 10.0f * frame_delta;
+            }
+            if (frame_input.arrow_left) {
+                viewport_camera.position.x += 10.0f * frame_delta;
+            }
+            if (frame_input.arrow_right) {
+                viewport_camera.position.x -= 10.0f * frame_delta;
+            }
         }
 
         // -----------------------
         // Render viewport frame
         {
-            UINT stride = sizeof(Vertex);
-            UINT offset = 0;
-
             deviceContext->ClearRenderTargetView(renderTargetView, clear_color);
 
             deviceContext->RSSetViewports(1, &render_viewport);
-            deviceContext->OMSetRenderTargets(1, &renderTargetView, NULL);
+            deviceContext->OMSetRenderTargets(1, &renderTargetView, nullptr);
 
-            deviceContext->IASetInputLayout(inputLayout);
-            deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            // --------------------------------
+            // Update viewport camera cbuffer
+            {
+                float viewWidth = viewport_camera.zoom / (4.0f/3.0f);
+                float viewHeight = viewport_camera.zoom;
+                float nearPlane = 0.0f;
+                float farPlane = 10.0f;
 
-            deviceContext->VSSetShader(vertexShader, nullptr, 0);
-            deviceContext->PSSetShader(pixelShader, nullptr, 0);
+                DirectX::XMMATRIX translationMatrix = DirectX::XMMatrixTranslation(viewport_camera.position.x, viewport_camera.position.y, 0.0f);
+                DirectX::XMMATRIX viewMatrix = DirectX::XMMatrixIdentity();
+                viewMatrix = XMMatrixMultiply(viewMatrix, translationMatrix);
 
-            deviceContext->PSSetShaderResources(0, 1, &test_texture_01.resource_view);
-            deviceContext->PSSetSamplers(0, 1, &test_texture_01.sampler);
+                DirectX::XMMATRIX projectionMatrix = DirectX::XMMatrixOrthographicLH(viewWidth, viewHeight, nearPlane, farPlane);
+                DirectX::XMMATRIX viewProjectionMatrix = DirectX::XMMatrixMultiply(viewMatrix, projectionMatrix);
 
-            deviceContext->IASetVertexBuffers(0, 1, &vertexBuffer, &stride, &offset);
+                ViewProjectionBufferType viewProjection = {
+                    .viewProjectionMatrix = DirectX::XMMatrixTranspose(viewProjectionMatrix),
+                };
 
-            float viewWidth = viewport_camera.zoom / (4.0f/3.0f);
-            float viewHeight = viewport_camera.zoom;
-            float nearPlane = 0.0f;
-            float farPlane = 10.0f;
+                D3D11_MAPPED_SUBRESOURCE mappedResource;
+                HRESULT hr = deviceContext->Map(cbuffer_view_projection, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
+                if (FAILED(hr)) {
+                    ErrorMessageAndBreak((char*)"deviceContext->Map() ViewProjectionBufferType failed!");
+                }
 
-            DirectX::XMMATRIX translationMatrix = DirectX::XMMatrixTranslation(viewport_camera.position.x, viewport_camera.position.y, 0.0f);
-            DirectX::XMMATRIX viewMatrix = DirectX::XMMatrixIdentity();
-            viewMatrix = XMMatrixMultiply(viewMatrix, translationMatrix);
+                ViewProjectionBufferType* projection_data_ptr = (ViewProjectionBufferType*)mappedResource.pData;
+                projection_data_ptr->viewProjectionMatrix = viewProjection.viewProjectionMatrix;
+                deviceContext->Unmap(cbuffer_view_projection, 0);
 
-            DirectX::XMMATRIX projectionMatrix = DirectX::XMMatrixOrthographicLH(viewWidth, viewHeight, nearPlane, farPlane);
-            DirectX::XMMATRIX viewProjectionMatrix = DirectX::XMMatrixMultiply(viewMatrix, projectionMatrix);
+                deviceContext->VSSetConstantBuffers(0, 1, &cbuffer_view_projection);
+            }
 
-            MatrixBufferType matrices = {
-                .viewProjectionMatrix = DirectX::XMMatrixTranspose(viewProjectionMatrix),
-                .modelMatrix = DirectX::XMMatrixTranspose(DirectX::XMMatrixIdentity()),
+            TilemapTile tile = {
+                .position = {0.5f, 0.5f},
+                .texture = &test_texture_01
             };
-
-            deviceContext->UpdateSubresource(matrixBuffer, 0, NULL, &matrices, 0, 0);
-            deviceContext->VSSetConstantBuffers(0, 1, &matrixBuffer);
-
-            deviceContext->Draw(6, 0);
+            DrawTile(&tile);
 
             swapChain->Present(1, 0);
         }
+
+        frame_counter++;
     }
 
     return main_window_message.wParam;
+}
+
+void DrawTile(TilemapTile* tile) {
+    D3D11_MAPPED_SUBRESOURCE mappedResource = {};
+
+    HRESULT hr = deviceContext->Map(cbuffer_model, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
+    if (FAILED(hr)) {
+        ErrorMessageAndBreak((char*)"deviceContext->Map() ModelBufferType failed!");
+    }
+
+    auto model_matrix = DirectX::XMMatrixIdentity();
+    DirectX::XMMATRIX translation = DirectX::XMMatrixTranslation(tile->position.x, tile->position.y, 0.0f);
+    model_matrix = XMMatrixMultiply(model_matrix, translation);
+
+    ModelBufferType modelBuffer = {
+        .modelMatrix = DirectX::XMMatrixTranspose(model_matrix),
+    };
+
+    ModelBufferType* model_data_ptr = (ModelBufferType*)mappedResource.pData;
+    model_data_ptr->modelMatrix = modelBuffer.modelMatrix;
+    deviceContext->Unmap(cbuffer_model, 0);
+    deviceContext->VSSetConstantBuffers(1, 1, &cbuffer_model);
+
+    deviceContext->IASetInputLayout(tilemap_tile_input_layout);
+    deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    deviceContext->VSSetShader(tilemap_tile_vertex_shader, nullptr, 0);
+    deviceContext->PSSetShader(tilemap_tile_pixel_shader, nullptr, 0);
+
+    deviceContext->PSSetShaderResources(0, 1, &tile->texture->resource_view);
+    deviceContext->PSSetSamplers(0, 1, &tile->texture->sampler);
+
+    UINT stride = sizeof(TilemapTileVertex);
+    UINT offset = 0;
+
+    deviceContext->IASetVertexBuffers(0, 1, &tilemap_tile_vertex_buffer, &stride, &offset);
+    deviceContext->Draw(6, 0);
 }
