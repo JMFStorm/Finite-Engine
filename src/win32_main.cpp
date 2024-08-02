@@ -97,8 +97,13 @@ struct TilemapTileVertex {
 };
 
 struct TilemapTile {
-    Vec2 position;
     Texture* texture;
+};
+
+struct Tilemap {
+    i32 width;
+    i32 height;
+    TilemapTile* tiles;
 };
 
 // -----------------------
@@ -121,13 +126,17 @@ bool IsKeyPressed(int key);
 
 bool IsWindowFocused(HWND window_handle);
 
-void DrawTile(TilemapTile* tile);
+void DrawTilemapTile(Texture* texture, Vec2 coordinate);
+
+void StrToWideStr(char* str, wchar_t* wresult, int str_count);
 
 // ---------
 // Globals
 
 LARGE_INTEGER g_frequency;
 LARGE_INTEGER g_lastTime;
+
+Vec2 viewport_mouse = {};
 
 u64 frame_counter = 0;
 f32 frame_delta = 0.0f;
@@ -138,6 +147,8 @@ ID3D11Buffer* cbuffer_view_projection = nullptr;
 ID3D11Buffer* cbuffer_model = nullptr;
 
 HWND viewport_window_handle;
+HWND camera_coords_label_handle;
+HWND mouse_pos_label_handle;
 HWND main_window_handle;
 MSG main_window_message;
 
@@ -268,12 +279,26 @@ void DebugMessage(char* message) {
 #endif
 }
 
+void StrToWideStr(char* str, wchar_t* wresult, int str_count) {
+    MultiByteToWideChar(CP_UTF8, 0, str, -1, wresult, str_count);
+}
+
 LRESULT CALLBACK ViewportWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
-        case WM_DESTROY:
+        case WM_DESTROY: {
             PostQuitMessage(0);
-            return 0;
+            break;
+        }
+
+        case WM_MOUSEMOVE: {
+            int x = LOWORD(lParam);
+            int y = HIWORD(lParam);
+            viewport_mouse.x = (f32)x;
+            viewport_mouse.y = (f32)y;
+            break;
+        }
     }
+
     return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
 
@@ -550,9 +575,31 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         viewport_window_handle = CreateWindowEx(
             0, viewport_window_class_name, NULL,
             WS_CHILD | WS_VISIBLE,
-            20, 300, 800, 600,
+            20, 200, 1200, 800,
             main_window_handle,
             NULL, hInstance, NULL
+        );
+
+        mouse_pos_label_handle = CreateWindowW(
+            L"STATIC",
+            L"Viewport mouse: (0, 0)",
+            WS_CHILD | WS_VISIBLE | SS_CENTER,
+            20, 1050, 300, 25,       // Position and dimensions
+            main_window_handle,
+            NULL,
+            hInstance,
+            NULL
+        );
+
+        camera_coords_label_handle = CreateWindowW(
+            L"STATIC",
+            L"Camera: (0, 0), Zoom: (0)",
+            WS_CHILD | WS_VISIBLE | SS_CENTER,
+            320, 1050, 300, 25,       // Position and dimensions
+            main_window_handle,
+            NULL,
+            hInstance,
+            NULL
         );
     }
 
@@ -564,8 +611,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     {
         DXGI_SWAP_CHAIN_DESC scd = {};
         scd.BufferCount = 1;
-        scd.BufferDesc.Width = 800;
-        scd.BufferDesc.Height = 600;
+        scd.BufferDesc.Width = 1200;
+        scd.BufferDesc.Height = 800;
         scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
         scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
         scd.OutputWindow = viewport_window_handle;
@@ -587,8 +634,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         backBuffer->Release();
         deviceContext->OMSetRenderTargets(1, &renderTargetView, NULL);
 
-        render_viewport.Width = 800.0f;
-        render_viewport.Height = 600.0f;
+        render_viewport.Width = 1200.0f;
+        render_viewport.Height = 800.0f;
         render_viewport.MinDepth = 0.0f;
         render_viewport.MaxDepth = 1.0f;
         deviceContext->RSSetViewports(1, &render_viewport);
@@ -845,13 +892,41 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 deviceContext->VSSetConstantBuffers(0, 1, &cbuffer_view_projection);
             }
 
-            TilemapTile tile = {
-                .position = {0.5f, 0.5f},
-                .texture = &test_texture_01
+            Tilemap map {
+                .width = 15,
+                .height = 15,
             };
-            DrawTile(&tile);
+
+            for (int y = 0; y < map.height; y++) {
+                for (int x = 0; x < map.width; x++) {
+                    Vec2 coordinate = {(f32)x, f32(y)};
+                    DrawTilemapTile(&test_texture_01, coordinate);
+                }
+            }
 
             swapChain->Present(1, 0);
+        }
+
+        // ------------------
+        // Print debug info
+        {
+            const int size = 128;
+            char buffer[size] = {};
+            wchar_t wide_message[size] = {};
+
+            sprintf(buffer, "Camera: (%.1f,%.1f), Zoom: (%.2f)", viewport_camera.position.x, viewport_camera.position.y, viewport_camera.zoom);
+            StrToWideStr((char*)buffer, wide_message, size);
+            SetWindowTextW(camera_coords_label_handle, wide_message);
+        }
+
+        {
+            const int size = 32;
+            char buffer2[size] = {};
+            wchar_t wide_message2[size] = {};
+
+            sprintf(buffer2, "Viewport mouse: (%.1f,%.1f)", viewport_mouse.x, viewport_mouse.y);
+            StrToWideStr((char*)buffer2, wide_message2, size);
+            SetWindowTextW(mouse_pos_label_handle, wide_message2);
         }
 
         frame_counter++;
@@ -860,7 +935,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     return main_window_message.wParam;
 }
 
-void DrawTile(TilemapTile* tile) {
+void DrawTilemapTile(Texture* texture, Vec2 coordinate) {
     D3D11_MAPPED_SUBRESOURCE mappedResource = {};
 
     HRESULT hr = deviceContext->Map(cbuffer_model, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
@@ -868,8 +943,11 @@ void DrawTile(TilemapTile* tile) {
         ErrorMessageAndBreak((char*)"deviceContext->Map() ModelBufferType failed!");
     }
 
+    f32 x = coordinate.x * (-0.5f) + coordinate.y * (0.5f);
+    f32 y = coordinate.x * (0.5f) + coordinate.y * (0.5f);
+
     auto model_matrix = DirectX::XMMatrixIdentity();
-    DirectX::XMMATRIX translation = DirectX::XMMatrixTranslation(tile->position.x, tile->position.y, 0.0f);
+    DirectX::XMMATRIX translation = DirectX::XMMatrixTranslation(x, y, 0.0f);
     model_matrix = XMMatrixMultiply(model_matrix, translation);
 
     ModelBufferType modelBuffer = {
@@ -887,8 +965,8 @@ void DrawTile(TilemapTile* tile) {
     deviceContext->VSSetShader(tilemap_tile_vertex_shader, nullptr, 0);
     deviceContext->PSSetShader(tilemap_tile_pixel_shader, nullptr, 0);
 
-    deviceContext->PSSetShaderResources(0, 1, &tile->texture->resource_view);
-    deviceContext->PSSetSamplers(0, 1, &tile->texture->sampler);
+    deviceContext->PSSetShaderResources(0, 1, &texture->resource_view);
+    deviceContext->PSSetSamplers(0, 1, &texture->sampler);
 
     UINT stride = sizeof(TilemapTileVertex);
     UINT offset = 0;
