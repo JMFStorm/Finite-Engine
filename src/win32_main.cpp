@@ -23,11 +23,6 @@
 #define ID_EDIT_PASTE 9005
 #define ID_HELP_ABOUT 9006
 
-#define ID_BUTTON 2001
-
-#define ID_COMBOBOX1 1001
-#define ID_COMBOBOX2 1002
-
 typedef int i32;
 typedef long long i64;
 
@@ -130,8 +125,27 @@ void DrawTilemapTile(Texture* texture, Vec2 coordinate);
 
 void StrToWideStr(char* str, wchar_t* wresult, int str_count);
 
+Vec2 TilemapCoordsToIsometricScreenSpace(Vec2 tilemap_coord);
+
 // ---------
 // Globals
+
+const DirectX::XMMATRIX isometric_transformation_matrix = DirectX::XMMatrixSet(
+    -0.5f, 0.5f, 0.0f, 0.0f,  // Row 1
+     0.5f, 0.5f, 0.0f, 0.0f,  // Row 2
+     0.0f, 0.0f, 1.0f, 0.0f,  // Row 3
+     0.0f, 0.0f, 0.0f, 1.0f   // Row 4
+);
+
+// DirectX::XMVECTOR determinant;
+// const DirectX::XMMATRIX inverse_isometric_transformation_matrix = DirectX::XMMatrixInverse(&determinant, isometric_transformation_matrix);
+
+const DirectX::XMMATRIX inverse_isometric_transformation_matrix = DirectX::XMMatrixSet(
+    -1.0f, 1.0f, 0.0f, 0.0f,  // Row 1
+     1.0f, 1.0f, 0.0f, 0.0f,  // Row 2
+     0.0f, 0.0f, 1.0f, 0.0f,  // Row 3
+     0.0f, 0.0f, 0.0f, 1.0f   // Row 4
+);
 
 LARGE_INTEGER g_frequency;
 LARGE_INTEGER g_lastTime;
@@ -341,38 +355,8 @@ bool IsKeyPressed(int key) {
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_CREATE: {
-
-            // ---------------
-            // Select menu 1
-            {
-                HWND hComboBox = CreateWindowW(
-                    L"COMBOBOX",  NULL,
-                    WS_CHILD | WS_VISIBLE | CBS_DROPDOWN, 
-                    10, 10, 200, 100, 
-                    hwnd, (HMENU)ID_COMBOBOX1, 
-                    GetModuleHandle(NULL), NULL);
-
-                SendMessageW(hComboBox, CB_ADDSTRING, 0, (LPARAM)L"Red");
-                SendMessageW(hComboBox, CB_ADDSTRING, 0, (LPARAM)L"Green");
-                SendMessageW(hComboBox, CB_ADDSTRING, 0, (LPARAM)L"Blue");
-            }
-
-            // ---------------
-            // Select menu 2
-            {
-                HWND hComboBox2 = CreateWindowW(
-                    L"COMBOBOX",  NULL,
-                    WS_CHILD | WS_VISIBLE | CBS_DROPDOWN, 
-                    400, 10, 200, 100, 
-                    hwnd, (HMENU)ID_COMBOBOX2, 
-                    GetModuleHandle(NULL), NULL);
-
-                SendMessageW(hComboBox2, CB_ADDSTRING, 0, (LPARAM)L"Item 4");
-                SendMessageW(hComboBox2, CB_ADDSTRING, 0, (LPARAM)L"Item 5");
-                SendMessageW(hComboBox2, CB_ADDSTRING, 0, (LPARAM)L"Item 6");
-            }
-            
-            // Window menus
+            //----------------------
+            // Create window menus
             { 
                 HMENU hFileMenu = CreateMenu();
                 AppendMenuW(hFileMenu, MF_STRING, ID_FILE_OPEN, L"Open");
@@ -393,71 +377,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
                 SetMenu(hwnd, hMenu); // Attach the main menu to the window
             }
-
-            // Create a button
-            {
-                HWND hButton = CreateWindowEx(
-                    0, L"BUTTON", L"Click Me",
-                    WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON,
-                    10, 80, 100, 30,
-                    hwnd, (HMENU)ID_BUTTON,
-                    GetModuleHandle(NULL), NULL);
-
-                if (hButton == NULL) {
-                    MessageBox(hwnd, L"Failed to create button!", L"Error", MB_OK | MB_ICONERROR);
-                }
-            }
-            break;
         }
         case WM_COMMAND: {
-            switch (HIWORD(wParam)) {
-                case CBN_SELCHANGE: {
-                    HWND hComboBox = (HWND)lParam;
-                    int comboBoxID = GetDlgCtrlID(hComboBox);
-
-                    switch (comboBoxID) {
-                        case ID_COMBOBOX1: {
-                            HWND hComboBox = (HWND)lParam;
-                            int itemIndex = SendMessageW(hComboBox, CB_GETCURSEL, 0, 0);
-
-                            if (itemIndex == 0) {
-                                clear_color[0] = 1.0f;
-                                clear_color[1] = 0.0f;
-                                clear_color[2] = 0.0f;
-                            }
-                            else if (itemIndex == 1) {
-                                clear_color[0] = 0.0f;
-                                clear_color[1] = 1.0f;
-                                clear_color[2] = 0.0f;
-                            }
-                            else if (itemIndex == 2) {
-                                clear_color[0] = 0.0f;
-                                clear_color[1] = 0.0f;
-                                clear_color[2] = 1.0f;
-                            }
-
-                            break;
-                        }
-
-                        case ID_COMBOBOX2: {
-                            HWND hComboBox = (HWND)lParam;
-                            int itemIndex = SendMessageW(hComboBox, CB_GETCURSEL, 0, 0);
-
-                            if (itemIndex != CB_ERR) {
-                                wchar_t selectedItem[256];
-                                SendMessageW(hComboBox, CB_GETLBTEXT, itemIndex, (LPARAM)selectedItem);
-                                MessageBox(hwnd, selectedItem, L"Item Selected 2", MB_OK);
-                            }
-                            break;
-                        }    
-                    }
-                }
-            }
-
             switch (LOWORD(wParam)) {
-                case ID_BUTTON:
-                    MessageBox(hwnd, L"Button clicked!", L"Info", MB_OK | MB_ICONINFORMATION);
-                    break;
                 case ID_FILE_QUIT:
                     PostMessage(hwnd, WM_CLOSE, 0, 0);
                     break;
@@ -575,7 +497,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         viewport_window_handle = CreateWindowEx(
             0, viewport_window_class_name, NULL,
             WS_CHILD | WS_VISIBLE,
-            20, 200, 1200, 800,
+            5, 5, 1200, 800,
             main_window_handle,
             NULL, hInstance, NULL
         );
@@ -603,6 +525,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         );
     }
 
+    // ------------
+    // Init timer
     QueryPerformanceFrequency(&g_frequency);
     QueryPerformanceCounter(&g_lastTime);
 
@@ -628,10 +552,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             ErrorMessageAndBreak((char*)"D3D11CreateDeviceAndSwapChain Failed!");
         }
 
-        ID3D11Texture2D *backBuffer = {};
+        ID3D11Texture2D* backBuffer;
         swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (LPVOID*)&backBuffer);
         id3d11_device->CreateRenderTargetView(backBuffer, NULL, &renderTargetView);
-        backBuffer->Release();
+        
         deviceContext->OMSetRenderTargets(1, &renderTargetView, NULL);
 
         render_viewport.Width = 1200.0f;
@@ -641,7 +565,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         deviceContext->RSSetViewports(1, &render_viewport);
     }
 
-    // --------------------------
+    // -----------------------
     // Configure blend state
     {
         D3D11_BLEND_DESC blendDesc = {};
@@ -669,7 +593,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         deviceContext->OMSetBlendState(blendState, blendFactor, sampleMask);
     }
 
-    // -------------------------------
+    // -------------------------
     // Create constant buffers
     {
         HRESULT hresult;
@@ -850,6 +774,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             if (frame_input.arrow_right) {
                 viewport_camera.position.x -= 10.0f * frame_delta;
             }
+
+            // -----------------------------
+            // Get cursor tilemap position
+            {
+                viewport_mouse.x;
+                viewport_mouse.y;
+            }
         }
 
         // -----------------------
@@ -893,8 +824,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             }
 
             Tilemap map {
-                .width = 15,
-                .height = 15,
+                .width = 5,
+                .height = 4,
             };
 
             for (int y = 0; y < map.height; y++) {
@@ -935,6 +866,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     return main_window_message.wParam;
 }
 
+Vec2 TilemapCoordsToIsometricScreenSpace(Vec2 tilemap_coord) {
+    DirectX::XMFLOAT4 float4;
+    auto vec4 = DirectX::XMVectorSet(tilemap_coord.x, tilemap_coord.y, 1.0f, 1.0f);
+    auto transformedVec = DirectX::XMVector4Transform(vec4, isometric_transformation_matrix);
+    XMStoreFloat4(&float4, transformedVec);
+    Vec2 result = {float4.x, float4.y};
+    return result;
+}
+
+
 void DrawTilemapTile(Texture* texture, Vec2 coordinate) {
     D3D11_MAPPED_SUBRESOURCE mappedResource = {};
 
@@ -943,11 +884,10 @@ void DrawTilemapTile(Texture* texture, Vec2 coordinate) {
         ErrorMessageAndBreak((char*)"deviceContext->Map() ModelBufferType failed!");
     }
 
-    f32 x = coordinate.x * (-0.5f) + coordinate.y * (0.5f);
-    f32 y = coordinate.x * (0.5f) + coordinate.y * (0.5f);
+    Vec2 screen_coord = TilemapCoordsToIsometricScreenSpace(coordinate);
+    DirectX::XMMATRIX translation = DirectX::XMMatrixTranslation(screen_coord.x, screen_coord.y, 0.0f);
 
     auto model_matrix = DirectX::XMMatrixIdentity();
-    DirectX::XMMATRIX translation = DirectX::XMMatrixTranslation(x, y, 0.0f);
     model_matrix = XMMatrixMultiply(model_matrix, translation);
 
     ModelBufferType modelBuffer = {

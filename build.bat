@@ -1,4 +1,5 @@
-cl /std:c++20 /Zi /MTd /DDEBUG /D_UNICODE /DUNICODE /Fo"debug\\" /Fd"debug\\" src/win32_main.cpp user32.lib gdi32.lib kernel32.lib comdlg32.lib shell32.lib d3d11.lib D3DCompiler.lib DXGI.lib /link /SUBSYSTEM:WINDOWS /out:"debug\finite_engine_debug.exe"
+cl /std:c++20 /Zi /MTd /DDEBUG /D_UNICODE /DUNICODE /Fo"debug\\" /Fd"debug\\" src/win32_main.cpp /link /LIBPATH:"./lib" user32.lib gdi32.lib kernel32.lib comdlg32.lib shell32.lib d3d11.lib D3DCompiler.lib DXGI.lib /SUBSYSTEM:WINDOWS /OUT:"debug\finite_engine_debug.exe"
+
 
 @echo off
 :: Check the error level (exit code) of the last command
