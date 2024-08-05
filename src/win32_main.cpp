@@ -91,6 +91,11 @@ struct TilemapTileVertex {
     DirectX::XMFLOAT2 uv;
 };
 
+struct TextUiVertex {
+    DirectX::XMFLOAT4 Pos;
+    DirectX::XMFLOAT2 TexCoord;
+};
+
 struct TilemapTile {
     Texture* texture;
 };
@@ -179,6 +184,11 @@ ID3D11VertexShader* tilemap_tile_vertex_shader;
 ID3D11PixelShader* tilemap_tile_pixel_shader;
 ID3D11Buffer* tilemap_tile_vertex_buffer;
 ID3D11InputLayout* tilemap_tile_input_layout;
+
+ID3D11VertexShader* text_ui_vertex_shader;
+ID3D11PixelShader* text_ui_pixel_shader;
+ID3D11Buffer* text_ui_vertex_buffer;
+ID3D11InputLayout* text_ui_input_layout;
 
 wchar_t open_filename_path[260] = {};
 OPENFILENAMEW open_filename_struct;
@@ -527,6 +537,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     // ------------
     // Init timer
+
     QueryPerformanceFrequency(&g_frequency);
     QueryPerformanceCounter(&g_lastTime);
 
@@ -621,33 +632,81 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         }
     }
 
-    // --------------------------
-    // Create the vertex buffer
+    // -----------------------
+    // Create font_ui shader
     {
-        TilemapTileVertex vertices[] = {
-            { DirectX::XMFLOAT3(-0.5f, 0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 0.0f) },  // Top-left
-            { DirectX::XMFLOAT3(0.5f, -0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 1.0f) },  // Bottom-right
-            { DirectX::XMFLOAT3(-0.5f, -0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 1.0f) }, // Bottom-left
+        HRESULT hr;
+        ID3DBlob* error_blob = nullptr;
+        ID3DBlob* pVSBlob = nullptr;
+        ID3DBlob* pPSBlob = nullptr;
 
-            { DirectX::XMFLOAT3(-0.5f, 0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 0.0f) },  // Top-left
-            { DirectX::XMFLOAT3(0.5f, 0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 0.0f) },   // Top-right
-            { DirectX::XMFLOAT3(0.5f, -0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 1.0f) }   // Bottom-right
-        };
+        hr = D3DCompileFromFile(
+            L"G:\\projects\\game\\finite-engine-dev\\resources\\shaders\\text_ui.hlsl",
+            nullptr, nullptr, "VSMain", "vs_5_0", 0, 0, &pVSBlob, &error_blob);
+        CheckShaderCompileError(hr, error_blob);
 
-        D3D11_BUFFER_DESC bufferDesc = {};
-        bufferDesc.Usage = D3D11_USAGE_DEFAULT;
-        bufferDesc.ByteWidth = sizeof(vertices);
-        bufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-        bufferDesc.CPUAccessFlags = 0;
+        hr = D3DCompileFromFile(
+            L"G:\\projects\\game\\finite-engine-dev\\resources\\shaders\\text_ui.hlsl",
+            nullptr, nullptr, "PSMain", "ps_5_0", 0, 0, &pPSBlob, &error_blob);
+        CheckShaderCompileError(hr, error_blob);
 
-        D3D11_SUBRESOURCE_DATA initData = {};
-        initData.pSysMem = vertices;
-
-        HRESULT hr = id3d11_device->CreateBuffer(&bufferDesc, &initData, &tilemap_tile_vertex_buffer);
+        hr = id3d11_device->CreateVertexShader(pVSBlob->GetBufferPointer(), pVSBlob->GetBufferSize(), nullptr, &text_ui_vertex_shader);
         if (FAILED(hr)) {
-            ErrorMessageAndBreak((char*)"CreateBuffer (vertex) failed!");
+            ErrorMessageAndBreak((char*)"CreateVertexShader font_ui failed!");
         }
 
+        hr = id3d11_device->CreatePixelShader(pPSBlob->GetBufferPointer(), pPSBlob->GetBufferSize(), nullptr, &text_ui_pixel_shader);
+        if (FAILED(hr)) {
+            ErrorMessageAndBreak((char*)"CreatePixelShader font_ui failed!");
+        }
+
+        // Define the input layout
+        D3D11_INPUT_ELEMENT_DESC layout[] = {
+            { "POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        };
+
+        // Create the input layout
+        hr = id3d11_device->CreateInputLayout(layout, ARRAYSIZE(layout), pVSBlob->GetBufferPointer(), pVSBlob->GetBufferSize(), &text_ui_input_layout);
+        if (FAILED(hr)) {
+            ErrorMessageAndBreak((char*)"CreateInputLayout font_ui failed!");
+        }
+
+        pVSBlob->Release();
+        pPSBlob->Release();
+
+        // -----------------------
+        // Create text_ui buffer
+        {
+            TextUiVertex vertices[] = {
+                { DirectX::XMFLOAT4(-0.5f, 0.5f, 0.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 0.0f) },  // Top-left
+                { DirectX::XMFLOAT4(0.5f, 0.5f, 0.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 0.0f) },   // Top-right
+                { DirectX::XMFLOAT4(-0.5f, -0.5f, 0.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 1.0f) }, // Bottom-left
+
+                { DirectX::XMFLOAT4(-0.5f, -0.5f, 0.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 1.0f) }, // Bottom-left
+                { DirectX::XMFLOAT4(0.5f, 0.5f, 0.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 0.0f) },   // Top-right
+                { DirectX::XMFLOAT4(0.5f, -0.5f, 0.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 1.0f) }   // Bottom-right
+            };
+
+            D3D11_BUFFER_DESC vertexBufferDesc = {};
+            vertexBufferDesc.Usage = D3D11_USAGE_DEFAULT;
+            vertexBufferDesc.ByteWidth = sizeof(vertices);
+            vertexBufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+            vertexBufferDesc.CPUAccessFlags = 0;
+
+            D3D11_SUBRESOURCE_DATA vertexData = {};
+            vertexData.pSysMem = vertices;
+            hr = id3d11_device->CreateBuffer(&vertexBufferDesc, &vertexData, &text_ui_vertex_buffer);
+            if (FAILED(hr)) {
+                ErrorMessageAndBreak((char*)"CreateBuffer for text_ui vertex buffer failed!");
+            }
+        }
+    }
+
+    // --------------------------
+    // Create tilemap shader
+    {
+        HRESULT hr;
         ID3DBlob* vsBlob = nullptr;
         ID3DBlob* psBlob = nullptr;
         ID3DBlob* error_blob = nullptr;
@@ -675,9 +734,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         }
 
         D3D11_INPUT_ELEMENT_DESC layout[] = {
-            { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-            { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-            { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 28, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
         };
 
         hr = id3d11_device->CreateInputLayout(layout, ARRAYSIZE(layout), vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &tilemap_tile_input_layout);
@@ -687,6 +746,34 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
         vsBlob->Release();
         psBlob->Release();
+
+        // ------------------------------
+        // Create tilemap shader buffer
+        {
+            TilemapTileVertex vertices[] = {
+                { DirectX::XMFLOAT3(-0.5f, 0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 0.0f) },  // Top-left
+                { DirectX::XMFLOAT3(0.5f, -0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 1.0f) },  // Bottom-right
+                { DirectX::XMFLOAT3(-0.5f, -0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 1.0f) }, // Bottom-left
+
+                { DirectX::XMFLOAT3(-0.5f, 0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 0.0f) },  // Top-left
+                { DirectX::XMFLOAT3(0.5f, 0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 0.0f) },   // Top-right
+                { DirectX::XMFLOAT3(0.5f, -0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 1.0f) }   // Bottom-right
+            };
+
+            D3D11_BUFFER_DESC bufferDesc = {};
+            bufferDesc.Usage = D3D11_USAGE_DEFAULT;
+            bufferDesc.ByteWidth = sizeof(vertices);
+            bufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+            bufferDesc.CPUAccessFlags = 0;
+
+            D3D11_SUBRESOURCE_DATA initData = {};
+            initData.pSysMem = vertices;
+
+            hr = id3d11_device->CreateBuffer(&bufferDesc, &initData, &tilemap_tile_vertex_buffer);
+            if (FAILED(hr)) {
+                ErrorMessageAndBreak((char*)"CreateBuffer (vertex) failed!");
+            }
+        }
     }
 
     LoadTextureFromFilepath(
@@ -835,6 +922,23 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 }
             }
 
+            // Font test
+            {
+                deviceContext->IASetInputLayout(text_ui_input_layout);
+                deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+                deviceContext->VSSetShader(text_ui_vertex_shader, nullptr, 0);
+                deviceContext->PSSetShader(text_ui_pixel_shader, nullptr, 0);
+
+                deviceContext->PSSetShaderResources(0, 1, &test_texture_01.resource_view);
+                deviceContext->PSSetSamplers(0, 1, &test_texture_01.sampler);
+
+                UINT stride = sizeof(TextUiVertex);
+                UINT offset = 0;
+                deviceContext->IASetVertexBuffers(0, 1, &text_ui_vertex_buffer, &stride, &offset);
+                deviceContext->Draw(6, 0);
+            }
+
             swapChain->Present(1, 0);
         }
 
@@ -877,8 +981,9 @@ Vec2 TilemapCoordsToIsometricScreenSpace(Vec2 tilemap_coord) {
 
 
 void DrawTilemapTile(Texture* texture, Vec2 coordinate) {
+    // ----------------------
+    // Constant buffer part
     D3D11_MAPPED_SUBRESOURCE mappedResource = {};
-
     HRESULT hr = deviceContext->Map(cbuffer_model, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
     if (FAILED(hr)) {
         ErrorMessageAndBreak((char*)"deviceContext->Map() ModelBufferType failed!");
@@ -899,6 +1004,8 @@ void DrawTilemapTile(Texture* texture, Vec2 coordinate) {
     deviceContext->Unmap(cbuffer_model, 0);
     deviceContext->VSSetConstantBuffers(1, 1, &cbuffer_model);
 
+    // -------------
+    // Shader part
     deviceContext->IASetInputLayout(tilemap_tile_input_layout);
     deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
@@ -910,7 +1017,6 @@ void DrawTilemapTile(Texture* texture, Vec2 coordinate) {
 
     UINT stride = sizeof(TilemapTileVertex);
     UINT offset = 0;
-
     deviceContext->IASetVertexBuffers(0, 1, &tilemap_tile_vertex_buffer, &stride, &offset);
     deviceContext->Draw(6, 0);
 }
