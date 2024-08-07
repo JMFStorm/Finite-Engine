@@ -19,13 +19,6 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
 
-#define ID_FILE_QUIT 9001
-#define ID_FILE_SAVE 9002
-#define ID_FILE_OPEN 9003
-#define ID_EDIT_COPY 9004
-#define ID_EDIT_PASTE 9005
-#define ID_HELP_ABOUT 9006
-
 const int MAX_TEXT_UI_VERTEX_COUNT = 1000;
 
 typedef int i32;
@@ -49,6 +42,19 @@ static_assert(sizeof(double) * CHAR_BIT == 64, "double is not 64 bits");
 // ---------
 // Structs
 
+struct Window {
+    i32 width_px;
+    i32 height_px;
+};
+
+struct Viewport {
+    f32 aspect_width;
+    f32 aspect_height;
+    f32 GetAspect() {
+        return aspect_width / aspect_height;
+    }
+};
+
 struct FrameInput {
     bool mousewheel_up;
     bool mousewheel_down;
@@ -67,8 +73,8 @@ struct ViewProjectionMatrixBufferType {
     DirectX::XMMATRIX view_projection_matrix;
 };
 
-struct ProjectionMatrixBufferType {
-    DirectX::XMMATRIX projection_matrix;
+struct AspectProjectionMatrixBufferType {
+    DirectX::XMMATRIX aspect_projection_matrix;
 };
 
 struct ModelBufferType {
@@ -115,12 +121,16 @@ struct Tilemap {
 };
 
 struct FontGlyphInfo {
-    char character;
     i32 bitmap_width;
     i32 bitmap_height;
     i32 x_offset;
     i32 y_offset;
     f32 advance;
+    f32 uv_x0;
+    f32 uv_y0;
+    f32 uv_x1;
+    f32 uv_y1;
+    char character;
 };
 
 struct FontAtlasInfo {
@@ -128,7 +138,9 @@ struct FontAtlasInfo {
     f32 font_ascent;
     f32 font_descent;
     f32 font_linegap;
-    FontGlyphInfo glyphs[96] = {}; 
+    i32 font_atlas_width;
+    i32 font_atlas_height;
+    FontGlyphInfo glyphs[96] = {};
 };
 
 // -----------------------
@@ -144,8 +156,6 @@ void ErrorMessageAndBreak(char* message);
 void DebugMessage(char* message);
 
 void LoadTextureFromFilepath(Texture* texture, char* filepath);
-
-void RegisterViewportWindowClass(HINSTANCE hInstance);
 
 bool IsKeyPressed(int key);
 
@@ -169,15 +179,23 @@ const DirectX::XMMATRIX isometric_transformation_matrix = DirectX::XMMatrixSet(
      0.0f, 0.0f, 0.0f, 1.0f   // Row 4
 );
 
-// DirectX::XMVECTOR determinant;
-// const DirectX::XMMATRIX inverse_isometric_transformation_matrix = DirectX::XMMatrixInverse(&determinant, isometric_transformation_matrix);
-
 const DirectX::XMMATRIX inverse_isometric_transformation_matrix = DirectX::XMMatrixSet(
     -1.0f, 1.0f, 0.0f, 0.0f,  // Row 1
      1.0f, 1.0f, 0.0f, 0.0f,  // Row 2
      0.0f, 0.0f, 1.0f, 0.0f,  // Row 3
      0.0f, 0.0f, 0.0f, 1.0f   // Row 4
 );
+
+Window g_main_window = {
+    .width_px = 1600,
+    .height_px = 1200,
+};
+
+Viewport g_viewport = {
+    g_viewport.aspect_width = 4.0f,
+    g_viewport.aspect_height = 3.0f,
+};
+
 
 LARGE_INTEGER g_frequency;
 LARGE_INTEGER g_lastTime;
@@ -190,12 +208,9 @@ int mousewheel_delta = 0;
 FrameInput frame_input = {};
 
 ID3D11Buffer* cbuffer_view_projection = nullptr;
-ID3D11Buffer* cbuffer_projection_matrix = nullptr;
+ID3D11Buffer* cbuffer_aspect_projection_matrix = nullptr;
 ID3D11Buffer* cbuffer_model = nullptr;
 
-HWND viewport_window_handle;
-HWND camera_coords_label_handle;
-HWND mouse_pos_label_handle;
 HWND main_window_handle;
 MSG main_window_message;
 
@@ -322,37 +337,6 @@ void StrToWideStr(char* str, wchar_t* wresult, int str_count) {
     MultiByteToWideChar(CP_UTF8, 0, str, -1, wresult, str_count);
 }
 
-LRESULT CALLBACK ViewportWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-    switch (uMsg) {
-        case WM_DESTROY: {
-            PostQuitMessage(0);
-            break;
-        }
-
-        case WM_MOUSEMOVE: {
-            int x = LOWORD(lParam);
-            int y = HIWORD(lParam);
-            viewport_mouse.x = (f32)x;
-            viewport_mouse.y = (f32)y;
-            break;
-        }
-    }
-
-    return DefWindowProc(hwnd, uMsg, wParam, lParam);
-}
-
-void RegisterViewportWindowClass(HINSTANCE hInstance) {
-    WNDCLASSEX wc = {0};
-    wc.cbSize = sizeof(WNDCLASSEX);
-    wc.style = CS_HREDRAW | CS_VREDRAW;
-    wc.lpfnWndProc = ViewportWindowProc;
-    wc.hInstance = hInstance;
-    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-    wc.lpszClassName = viewport_window_class_name;
-    RegisterClassEx(&wc);
-}
-
 /**
  * @brief Check last DirectX  Shader compilation error from HRESULT and recieves error message from ID3DBlob pointer.
  * If error was found, breaks execution and prints error message.
@@ -377,74 +361,61 @@ bool IsKeyPressed(int key) {
     return (state & 0x8000) != 0;
 }
 
+void ResizeDirectXViewport(int width, int height) {
+    HRESULT hr;
+    renderTargetView->Release();
+    renderTargetView = nullptr;
+
+    hr = swapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
+    if (FAILED(hr)) {
+        ErrorMessageAndBreak((char*)"Resize ResizeBuffers() failed.");
+    }
+
+    ID3D11Texture2D* backBuffer = nullptr;
+    hr = swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&backBuffer);
+    if (FAILED(hr)) {
+        ErrorMessageAndBreak((char*)"Resize GetBuffer() failed.");
+    }
+
+    hr = id3d11_device->CreateRenderTargetView(backBuffer, nullptr, &renderTargetView);
+    if (FAILED(hr)) {
+         ErrorMessageAndBreak((char*)"Resize CreateRenderTargetView failed.");
+    }
+
+    backBuffer->Release();
+    deviceContext->OMSetRenderTargets(1, &renderTargetView, nullptr);
+
+    auto screen_aspect_ratio = (float)width / (float)height;
+    auto viewport_aspect_ratio = g_viewport.GetAspect();
+
+    if (1.0f <= screen_aspect_ratio) {
+        render_viewport.TopLeftY = 0;
+        render_viewport.Height = height;
+
+        f32 viewport_width = height * viewport_aspect_ratio;
+        render_viewport.TopLeftX = (width / 2) - (viewport_width / 2);
+        render_viewport.Width = viewport_width;
+    }
+    else {
+        render_viewport.TopLeftX = 0;
+        render_viewport.Width = width;
+
+        f32 viewport_height = width / viewport_aspect_ratio;
+        render_viewport.TopLeftY = (height / 2) - (viewport_height / 2);
+        render_viewport.Height = viewport_height;
+    }
+
+    render_viewport.MinDepth = 0.0f;
+    render_viewport.MaxDepth = 1.0f;
+}
+
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_CREATE: {
-            //----------------------
-            // Create window menus
-            { 
-                HMENU hFileMenu = CreateMenu();
-                AppendMenuW(hFileMenu, MF_STRING, ID_FILE_OPEN, L"Open");
-                AppendMenuW(hFileMenu, MF_STRING, ID_FILE_SAVE, L"Save");
-                AppendMenuW(hFileMenu, MF_STRING, ID_FILE_QUIT, L"Quit");
-
-                HMENU hEditMenu = CreateMenu();
-                AppendMenuW(hEditMenu, MF_STRING, ID_EDIT_COPY, L"Copy");
-                AppendMenuW(hEditMenu, MF_STRING, ID_EDIT_PASTE, L"Paste");
-
-                HMENU hHelpMenu = CreateMenu();
-                AppendMenuW(hHelpMenu, MF_STRING, ID_HELP_ABOUT, L"About");
-
-                HMENU hMenu = CreateMenu();
-                AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)hFileMenu, L"File");
-                AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)hEditMenu, L"Edit");
-                AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)hHelpMenu, L"Help");
-
-                SetMenu(hwnd, hMenu); // Attach the main menu to the window
-            }
+            break;
         }
+
         case WM_COMMAND: {
-            switch (LOWORD(wParam)) {
-                case ID_FILE_QUIT:
-                    PostMessage(hwnd, WM_CLOSE, 0, 0);
-                    break;
-                case ID_FILE_SAVE:
-                    MessageBox(hwnd, L"Save selected", L"Menu", MB_OK);
-                    break;
-                case ID_FILE_OPEN: {
-                    open_filename_struct = {};
-                    open_filename_struct.lStructSize = sizeof(open_filename_struct);
-                    open_filename_struct.hwndOwner = hwnd;
-                    open_filename_struct.lpstrFile = open_filename_path;
-
-                    // Set lpstrFile[0] to '\0' so that GetOpenFileName does not 
-                    // use the contents of open_filename_path to initialize itself.
-                    open_filename_struct.lpstrFile[0] = '\0';
-                    open_filename_struct.nMaxFile = sizeof(open_filename_path);
-                    open_filename_struct.lpstrFilter = L"All\0*.*\0Text\0*.TXT\0";
-                    open_filename_struct.nFilterIndex = 1;
-                    open_filename_struct.lpstrFileTitle = NULL;
-                    open_filename_struct.nMaxFileTitle = 0;
-                    open_filename_struct.lpstrInitialDir = NULL;
-                    open_filename_struct.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
-
-                    if (GetOpenFileNameW(&open_filename_struct) == TRUE) {
-                        MessageBox(hwnd, open_filename_struct.lpstrFile, L"Menu", MB_OK);
-                    }
-
-                    break;
-                }
-
-                case ID_EDIT_COPY:
-                    MessageBox(hwnd, L"Copy selected", L"Menu", MB_OK);
-                    break;
-                case ID_EDIT_PASTE:
-                    MessageBox(hwnd, L"Paste selected", L"Menu", MB_OK);
-                    break;
-                case ID_HELP_ABOUT:
-                    MessageBox(hwnd, L"About selected", L"Menu", MB_OK);
-                    break;
-            }
             break;
         }
 
@@ -466,6 +437,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_SIZE: {
+            if (wParam != SIZE_MINIMIZED) {
+                UINT width = LOWORD(lParam);
+                UINT height = HIWORD(lParam);
+                g_main_window.width_px = (i32)width;
+                g_main_window.height_px = (i32)height;
+                if (id3d11_device && swapChain) {
+                    ResizeDirectXViewport(g_main_window.width_px - 50, g_main_window.height_px - 50);
+                }
+            }
             break;
         }
 
@@ -505,7 +485,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         main_window_handle = CreateWindowW(
             window_class_name, window_title,
             WS_OVERLAPPEDWINDOW,
-            CW_USEDEFAULT, CW_USEDEFAULT, 1600, 1200,
+            CW_USEDEFAULT, CW_USEDEFAULT, g_main_window.width_px, g_main_window.height_px,
             NULL, NULL, hInstance, NULL
         );
 
@@ -515,38 +495,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
         ShowWindow(main_window_handle, nCmdShow);
         UpdateWindow(main_window_handle);
-
-        RegisterViewportWindowClass(hInstance);
-
-        viewport_window_handle = CreateWindowEx(
-            0, viewport_window_class_name, NULL,
-            WS_CHILD | WS_VISIBLE,
-            5, 5, 1200, 800,
-            main_window_handle,
-            NULL, hInstance, NULL
-        );
-
-        mouse_pos_label_handle = CreateWindowW(
-            L"STATIC",
-            L"Viewport mouse: (0, 0)",
-            WS_CHILD | WS_VISIBLE | SS_CENTER,
-            20, 1050, 300, 25,       // Position and dimensions
-            main_window_handle,
-            NULL,
-            hInstance,
-            NULL
-        );
-
-        camera_coords_label_handle = CreateWindowW(
-            L"STATIC",
-            L"Camera: (0, 0), Zoom: (0)",
-            WS_CHILD | WS_VISIBLE | SS_CENTER,
-            320, 1050, 300, 25,       // Position and dimensions
-            main_window_handle,
-            NULL,
-            hInstance,
-            NULL
-        );
     }
 
     // ------------
@@ -559,17 +507,18 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     // Init DirectX 11
     {
         DXGI_SWAP_CHAIN_DESC scd = {};
-        scd.BufferCount = 1;
-        scd.BufferDesc.Width = 1200;
-        scd.BufferDesc.Height = 800;
+        scd.BufferCount = 2;
+        scd.BufferDesc.Width = g_main_window.width_px;
+        scd.BufferDesc.Height = g_main_window.height_px;
         scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
         scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-        scd.OutputWindow = viewport_window_handle;
         scd.SampleDesc.Count = 1;
         scd.Windowed = TRUE;
+        scd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+        scd.OutputWindow = main_window_handle;
 
         HRESULT hr = D3D11CreateDeviceAndSwapChain(
-            nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0,
+            nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_DEBUG,
             nullptr, 0, D3D11_SDK_VERSION, &scd,
             &swapChain, &id3d11_device, nullptr, &deviceContext);
 
@@ -580,14 +529,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         ID3D11Texture2D* backBuffer;
         swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (LPVOID*)&backBuffer);
         id3d11_device->CreateRenderTargetView(backBuffer, NULL, &renderTargetView);
+        backBuffer->Release();
         
         deviceContext->OMSetRenderTargets(1, &renderTargetView, NULL);
 
-        render_viewport.Width = 1200.0f;
-        render_viewport.Height = 800.0f;
+        render_viewport.Width = (float)g_main_window.width_px;
+        render_viewport.Height = (float)g_main_window.height_px;
         render_viewport.MinDepth = 0.0f;
         render_viewport.MaxDepth = 1.0f;
-        deviceContext->RSSetViewports(1, &render_viewport);
     }
 
     // -----------------------
@@ -663,15 +612,34 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             ErrorMessageAndBreak((char*)"CreateBuffer ModelBufferType failed!");
         }
 
-        // Projection matrix
+        // Aspect projection matrix
         D3D11_BUFFER_DESC projectionBufferDesc = {};
         projectionBufferDesc.Usage = D3D11_USAGE_DYNAMIC;
-        projectionBufferDesc.ByteWidth = sizeof(ProjectionMatrixBufferType);
+        projectionBufferDesc.ByteWidth = sizeof(AspectProjectionMatrixBufferType);
         projectionBufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
         projectionBufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-        hresult = id3d11_device->CreateBuffer(&projectionBufferDesc, nullptr, &cbuffer_projection_matrix);
+        hresult = id3d11_device->CreateBuffer(&projectionBufferDesc, nullptr, &cbuffer_aspect_projection_matrix);
         if (FAILED(hresult)) {
             ErrorMessageAndBreak((char*)"CreateBuffer ProjectionMatrixBufferType failed!");
+        }
+
+        // Update aspect projection matrix
+        {
+            DirectX::XMMATRIX projectionMatrix = DirectX::XMMatrixOrthographicLH((float)g_viewport.aspect_width, (float)g_viewport.aspect_width, 0.0f, 10.0f);
+            AspectProjectionMatrixBufferType projection = {
+                .aspect_projection_matrix = DirectX::XMMatrixTranspose(projectionMatrix),
+            };
+
+            D3D11_MAPPED_SUBRESOURCE mappedResource1;
+            HRESULT hr = deviceContext->Map(cbuffer_aspect_projection_matrix, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource1);
+            if (FAILED(hr)) {
+                ErrorMessageAndBreak((char*)"deviceContext->Map() ProjectionMatrixBufferType failed!");
+            }
+
+            AspectProjectionMatrixBufferType* projection_data_ptr = (AspectProjectionMatrixBufferType*)mappedResource1.pData;
+            projection_data_ptr->aspect_projection_matrix = projection.aspect_projection_matrix;
+            deviceContext->Unmap(cbuffer_aspect_projection_matrix, 0);
+            deviceContext->VSSetConstantBuffers(2, 1, &cbuffer_aspect_projection_matrix);
         }
     }
 
@@ -861,46 +829,71 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             stbtt_FreeBitmap(bitmap, nullptr);
         }
 
-        // ---------------
-        // Atlas texture
-        {
+        g_debug_font.font_atlas_width = fontAtlasWidth;
+        g_debug_font.font_atlas_height = fontAtlasHeight;
+
+        int atlasX = 0;
+        unsigned char* font_atlas_buffer = (unsigned char*)calloc(fontAtlasHeight * fontAtlasWidth, sizeof(unsigned char));
+
+        for (int c = 32; c < 128; c++) {
+            int codepoint = c;
             int width, height, xoffset, yoffset;
-            unsigned char* bitmap = stbtt_GetCodepointBitmap(&font, 0, scale, 'm', &width, &height, &xoffset, &yoffset);
+            unsigned char *bitmap = stbtt_GetCodepointBitmap(&font, 0, scale, codepoint, &width, &height, &xoffset, &yoffset);
 
-            D3D11_TEXTURE2D_DESC desc = {};
-            desc.Width = width;
-            desc.Height = height;
-            desc.MipLevels = 1;
-            desc.ArraySize = 1;
-            desc.Format = DXGI_FORMAT_R8_UNORM;
-            desc.SampleDesc.Count = 1;
-            desc.Usage = D3D11_USAGE_DEFAULT;
-            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-            desc.CPUAccessFlags = 0;
-
-            D3D11_SUBRESOURCE_DATA initData = {};
-            initData.pSysMem = bitmap;
-            initData.SysMemPitch = width; // The distance in bytes between the start of each line of the texture
-            
-            ID3D11Texture2D* g_font_texture = nullptr;
-            HRESULT hr = id3d11_device->CreateTexture2D(&desc, &initData, &g_font_texture);
-            if (FAILED(hr)) {
-                ErrorMessageAndBreak((char*)"CreateTexture2D font atlas failed!");
+            for (int row = 0; row < height; row++) {
+                int dest_index = (g_debug_font.font_atlas_width * row) + atlasX;
+                unsigned char *dest = &font_atlas_buffer[dest_index];
+                int src_index = width * row;
+                unsigned char *src = &bitmap[src_index];
+                memcpy(dest, src, width);
             }
 
-            D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-            srvDesc.Format = desc.Format;
-            srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-            srvDesc.Texture2D.MostDetailedMip = 0;
-            srvDesc.Texture2D.MipLevels = 1;
+            f32 uv_x0 = (f32)atlasX / (f32)g_debug_font.font_atlas_width;
+            f32 uv_y0 = 0.0f;
+            f32 uv_x1 = uv_x0 + (f32)width / (f32)g_debug_font.font_atlas_width;
+            f32 uv_y1 = (f32)height / (f32)g_debug_font.font_atlas_height;
 
-            hr = id3d11_device->CreateShaderResourceView(g_font_texture, &srvDesc, &g_font_texture_view);
-            if (FAILED(hr)) {
-                ErrorMessageAndBreak((char*)"CreateShaderResourceView font atlas failed!");
-            }
+            int glyph_index = c - 32;
+            g_debug_font.glyphs[glyph_index].uv_x0 = uv_x0;
+            g_debug_font.glyphs[glyph_index].uv_y0 = uv_y0;
+            g_debug_font.glyphs[glyph_index].uv_x1 = uv_x1;
+            g_debug_font.glyphs[glyph_index].uv_y1 = uv_y1;
 
-            g_font_texture->Release();
+            atlasX += width;
+            stbtt_FreeBitmap(bitmap, nullptr);
         }
+
+        D3D11_TEXTURE2D_DESC desc = {};
+        desc.Width = g_debug_font.font_atlas_width;
+        desc.Height = g_debug_font.font_atlas_height;
+        desc.MipLevels = 1;
+        desc.ArraySize = 1;
+        desc.Format = DXGI_FORMAT_R8_UNORM;
+        desc.SampleDesc.Count = 1;
+        desc.Usage = D3D11_USAGE_DEFAULT;
+        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        desc.CPUAccessFlags = 0;
+        D3D11_SUBRESOURCE_DATA initData = {};
+        initData.pSysMem = font_atlas_buffer;
+        initData.SysMemPitch = g_debug_font.font_atlas_width; // The distance in bytes between the start of each line of the texture
+        
+        ID3D11Texture2D* g_font_texture = nullptr;
+        HRESULT hr = id3d11_device->CreateTexture2D(&desc, &initData, &g_font_texture);
+        if (FAILED(hr)) {
+            ErrorMessageAndBreak((char*)"CreateTexture2D font atlas failed!");
+        }
+
+        D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format = desc.Format;
+        srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Texture2D.MostDetailedMip = 0;
+        srvDesc.Texture2D.MipLevels = 1;
+        hr = id3d11_device->CreateShaderResourceView(g_font_texture, &srvDesc, &g_font_texture_view);
+        if (FAILED(hr)) {
+            ErrorMessageAndBreak((char*)"CreateShaderResourceView font atlas failed!");
+        }
+
+        g_font_texture->Release();
     }
 
     // -----------
@@ -1024,25 +1017,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 view_projection_data_ptr->view_projection_matrix = viewProjection.view_projection_matrix;
                 deviceContext->Unmap(cbuffer_view_projection, 0);
                 deviceContext->VSSetConstantBuffers(0, 1, &cbuffer_view_projection);
-
-                // Update projection matrix
-                {
-                    ProjectionMatrixBufferType projection = {
-                        .projection_matrix = DirectX::XMMatrixTranspose(projectionMatrix),
-                    };
-
-                    D3D11_MAPPED_SUBRESOURCE mappedResource1;
-                    HRESULT hr = deviceContext->Map(cbuffer_projection_matrix, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource1);
-                    if (FAILED(hr)) {
-                        ErrorMessageAndBreak((char*)"deviceContext->Map() ProjectionMatrixBufferType failed!");
-                    }
-
-                    ProjectionMatrixBufferType* projection_data_ptr = (ProjectionMatrixBufferType*)mappedResource1.pData;
-                    projection_data_ptr->projection_matrix = projection.projection_matrix;
-                    deviceContext->Unmap(cbuffer_projection_matrix, 0);
-                    deviceContext->VSSetConstantBuffers(2, 1, &cbuffer_projection_matrix);
-                }
-
             }
 
             // ---------------
@@ -1063,27 +1037,28 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
             // Font test
             {
-                // Buffer data
-                {
-                    TextUiVertex vertices[] = {
-                        { DirectX::XMFLOAT4(-0.5f, 0.5f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 0.0f) },  // Top-left
-                        { DirectX::XMFLOAT4(0.5f, 0.5f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 0.0f) },   // Top-right
-                        { DirectX::XMFLOAT4(-0.5f, -0.5f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 1.0f) }, // Bottom-left
+                char c = 'k';
 
-                        { DirectX::XMFLOAT4(-0.5f, -0.5f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 1.0f) }, // Bottom-left
-                        { DirectX::XMFLOAT4(0.5f, 0.5f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 0.0f) },   // Top-right
-                        { DirectX::XMFLOAT4(0.5f, -0.5f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 1.0f) }   // Bottom-right
-                    };
+                FontGlyphInfo glyph = g_debug_font.glyphs[c - 32];
 
-                    D3D11_MAPPED_SUBRESOURCE mappedResource;
-                    HRESULT hr = deviceContext->Map(text_ui_vertex_buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
-                    if (FAILED(hr)) {
-                        ErrorMessageAndBreak((char*)"Map for text_ui dynamic vertex buffer failed!");
-                    }
+                TextUiVertex vertices[] = {
+                    { DirectX::XMFLOAT4(-0.25f, 0.25f, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x0, glyph.uv_y0) },  // Top-left
+                    { DirectX::XMFLOAT4(0.25f, 0.25f, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x1, glyph.uv_y0) },   // Top-right
+                    { DirectX::XMFLOAT4(-0.25f, -0.25f, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x0, glyph.uv_y1) }, // Bottom-left
 
-                    memcpy(mappedResource.pData, vertices, sizeof(TextUiVertex) * 6);
-                    deviceContext->Unmap(text_ui_vertex_buffer, 0);
+                    { DirectX::XMFLOAT4(-0.25f, -0.25f, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x0, glyph.uv_y1) }, // Bottom-left
+                    { DirectX::XMFLOAT4(0.25f, 0.25f, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x1, glyph.uv_y0) },   // Top-right
+                    { DirectX::XMFLOAT4(0.25f, -0.25f, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x1, glyph.uv_y1) }   // Bottom-right
+                };
+
+                D3D11_MAPPED_SUBRESOURCE mappedResource;
+                HRESULT hr = deviceContext->Map(text_ui_vertex_buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
+                if (FAILED(hr)) {
+                    ErrorMessageAndBreak((char*)"Map for text_ui dynamic vertex buffer failed!");
                 }
+
+                memcpy(mappedResource.pData, vertices, sizeof(TextUiVertex) * 6);
+                deviceContext->Unmap(text_ui_vertex_buffer, 0);
 
                 deviceContext->IASetInputLayout(text_ui_input_layout);
                 deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -1101,28 +1076,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             }
 
             swapChain->Present(1, 0);
-        }
-
-        // ------------------
-        // Print debug info
-        {
-            const int size = 128;
-            char buffer[size] = {};
-            wchar_t wide_message[size] = {};
-
-            sprintf(buffer, "Camera: (%.1f,%.1f), Zoom: (%.2f)", viewport_camera.position.x, viewport_camera.position.y, viewport_camera.zoom);
-            StrToWideStr((char*)buffer, wide_message, size);
-            SetWindowTextW(camera_coords_label_handle, wide_message);
-        }
-
-        {
-            const int size = 32;
-            char buffer2[size] = {};
-            wchar_t wide_message2[size] = {};
-
-            sprintf(buffer2, "Viewport mouse: (%.1f,%.1f)", viewport_mouse.x, viewport_mouse.y);
-            StrToWideStr((char*)buffer2, wide_message2, size);
-            SetWindowTextW(mouse_pos_label_handle, wide_message2);
         }
 
         frame_counter++;
