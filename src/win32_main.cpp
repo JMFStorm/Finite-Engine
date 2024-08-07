@@ -63,8 +63,12 @@ struct Camera2D {
     f32 zoom; // how many tiles can see vertically
 };
 
-struct ViewProjectionBufferType {
-    DirectX::XMMATRIX viewProjectionMatrix;
+struct ViewProjectionMatrixBufferType {
+    DirectX::XMMATRIX view_projection_matrix;
+};
+
+struct ProjectionMatrixBufferType {
+    DirectX::XMMATRIX projection_matrix;
 };
 
 struct ModelBufferType {
@@ -186,6 +190,7 @@ int mousewheel_delta = 0;
 FrameInput frame_input = {};
 
 ID3D11Buffer* cbuffer_view_projection = nullptr;
+ID3D11Buffer* cbuffer_projection_matrix = nullptr;
 ID3D11Buffer* cbuffer_model = nullptr;
 
 HWND viewport_window_handle;
@@ -639,12 +644,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         // View projection matrix
         D3D11_BUFFER_DESC matrixBufferDesc = {};
         matrixBufferDesc.Usage = D3D11_USAGE_DYNAMIC;
-        matrixBufferDesc.ByteWidth = sizeof(ViewProjectionBufferType);
+        matrixBufferDesc.ByteWidth = sizeof(ViewProjectionMatrixBufferType);
         matrixBufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
         matrixBufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
         hresult = id3d11_device->CreateBuffer(&matrixBufferDesc, nullptr, &cbuffer_view_projection);
         if (FAILED(hresult)) {
-            ErrorMessageAndBreak((char*)"CreateBuffer matrixBuffer failed!");
+            ErrorMessageAndBreak((char*)"CreateBuffer ViewProjectionMatrixBufferType failed!");
         }
         
         // Model matrix
@@ -655,7 +660,18 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         modelBufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
         hresult = id3d11_device->CreateBuffer(&modelBufferDesc, nullptr, &cbuffer_model);
         if (FAILED(hresult)) {
-            ErrorMessageAndBreak((char*)"CreateBuffer modelBuffer failed!");
+            ErrorMessageAndBreak((char*)"CreateBuffer ModelBufferType failed!");
+        }
+
+        // Projection matrix
+        D3D11_BUFFER_DESC projectionBufferDesc = {};
+        projectionBufferDesc.Usage = D3D11_USAGE_DYNAMIC;
+        projectionBufferDesc.ByteWidth = sizeof(ProjectionMatrixBufferType);
+        projectionBufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        projectionBufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        hresult = id3d11_device->CreateBuffer(&projectionBufferDesc, nullptr, &cbuffer_projection_matrix);
+        if (FAILED(hresult)) {
+            ErrorMessageAndBreak((char*)"CreateBuffer ProjectionMatrixBufferType failed!");
         }
     }
 
@@ -669,12 +685,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
         hr = D3DCompileFromFile(
             L"G:\\projects\\game\\finite-engine-dev\\resources\\shaders\\text_ui.hlsl",
-            nullptr, nullptr, "VSMain", "vs_5_0", 0, 0, &pVSBlob, &error_blob);
+            nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, "VSMain", "vs_5_0", 0, 0, &pVSBlob, &error_blob);
         CheckShaderCompileError(hr, error_blob);
 
         hr = D3DCompileFromFile(
             L"G:\\projects\\game\\finite-engine-dev\\resources\\shaders\\text_ui.hlsl",
-            nullptr, nullptr, "PSMain", "ps_5_0", 0, 0, &pPSBlob, &error_blob);
+            nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, "PSMain", "ps_5_0", 0, 0, &pPSBlob, &error_blob);
         CheckShaderCompileError(hr, error_blob);
 
         hr = id3d11_device->CreateVertexShader(pVSBlob->GetBufferPointer(), pVSBlob->GetBufferSize(), nullptr, &text_ui_vertex_shader);
@@ -849,7 +865,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         // Atlas texture
         {
             int width, height, xoffset, yoffset;
-            unsigned char* bitmap = stbtt_GetCodepointBitmap(&font, 0, scale, 'b', &width, &height, &xoffset, &yoffset);
+            unsigned char* bitmap = stbtt_GetCodepointBitmap(&font, 0, scale, 'm', &width, &height, &xoffset, &yoffset);
 
             D3D11_TEXTURE2D_DESC desc = {};
             desc.Width = width;
@@ -992,23 +1008,41 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 viewMatrix = XMMatrixMultiply(viewMatrix, translationMatrix);
 
                 DirectX::XMMATRIX projectionMatrix = DirectX::XMMatrixOrthographicLH(viewWidth, viewHeight, nearPlane, farPlane);
-                DirectX::XMMATRIX viewProjectionMatrix = DirectX::XMMatrixMultiply(viewMatrix, projectionMatrix);
+                DirectX::XMMATRIX view_projection_matrix = DirectX::XMMatrixMultiply(viewMatrix, projectionMatrix);
 
-                ViewProjectionBufferType viewProjection = {
-                    .viewProjectionMatrix = DirectX::XMMatrixTranspose(viewProjectionMatrix),
+                ViewProjectionMatrixBufferType viewProjection = {
+                    .view_projection_matrix = DirectX::XMMatrixTranspose(view_projection_matrix),
                 };
 
                 D3D11_MAPPED_SUBRESOURCE mappedResource;
                 HRESULT hr = deviceContext->Map(cbuffer_view_projection, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
                 if (FAILED(hr)) {
-                    ErrorMessageAndBreak((char*)"deviceContext->Map() ViewProjectionBufferType failed!");
+                    ErrorMessageAndBreak((char*)"deviceContext->Map() ViewProjectionMatrixBufferType failed!");
                 }
 
-                ViewProjectionBufferType* projection_data_ptr = (ViewProjectionBufferType*)mappedResource.pData;
-                projection_data_ptr->viewProjectionMatrix = viewProjection.viewProjectionMatrix;
+                ViewProjectionMatrixBufferType* view_projection_data_ptr = (ViewProjectionMatrixBufferType*)mappedResource.pData;
+                view_projection_data_ptr->view_projection_matrix = viewProjection.view_projection_matrix;
                 deviceContext->Unmap(cbuffer_view_projection, 0);
-
                 deviceContext->VSSetConstantBuffers(0, 1, &cbuffer_view_projection);
+
+                // Update projection matrix
+                {
+                    ProjectionMatrixBufferType projection = {
+                        .projection_matrix = DirectX::XMMatrixTranspose(projectionMatrix),
+                    };
+
+                    D3D11_MAPPED_SUBRESOURCE mappedResource1;
+                    HRESULT hr = deviceContext->Map(cbuffer_projection_matrix, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource1);
+                    if (FAILED(hr)) {
+                        ErrorMessageAndBreak((char*)"deviceContext->Map() ProjectionMatrixBufferType failed!");
+                    }
+
+                    ProjectionMatrixBufferType* projection_data_ptr = (ProjectionMatrixBufferType*)mappedResource1.pData;
+                    projection_data_ptr->projection_matrix = projection.projection_matrix;
+                    deviceContext->Unmap(cbuffer_projection_matrix, 0);
+                    deviceContext->VSSetConstantBuffers(2, 1, &cbuffer_projection_matrix);
+                }
+
             }
 
             // ---------------
@@ -1032,13 +1066,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 // Buffer data
                 {
                     TextUiVertex vertices[] = {
-                        { DirectX::XMFLOAT4(-0.5f, 0.5f, 0.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 0.0f) },  // Top-left
-                        { DirectX::XMFLOAT4(0.5f, 0.5f, 0.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 0.0f) },   // Top-right
-                        { DirectX::XMFLOAT4(-0.5f, -0.5f, 0.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 1.0f) }, // Bottom-left
+                        { DirectX::XMFLOAT4(-0.5f, 0.5f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 0.0f) },  // Top-left
+                        { DirectX::XMFLOAT4(0.5f, 0.5f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 0.0f) },   // Top-right
+                        { DirectX::XMFLOAT4(-0.5f, -0.5f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 1.0f) }, // Bottom-left
 
-                        { DirectX::XMFLOAT4(-0.5f, -0.5f, 0.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 1.0f) }, // Bottom-left
-                        { DirectX::XMFLOAT4(0.5f, 0.5f, 0.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 0.0f) },   // Top-right
-                        { DirectX::XMFLOAT4(0.5f, -0.5f, 0.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 1.0f) }   // Bottom-right
+                        { DirectX::XMFLOAT4(-0.5f, -0.5f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 1.0f) }, // Bottom-left
+                        { DirectX::XMFLOAT4(0.5f, 0.5f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 0.0f) },   // Top-right
+                        { DirectX::XMFLOAT4(0.5f, -0.5f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 1.0f) }   // Bottom-right
                     };
 
                     D3D11_MAPPED_SUBRESOURCE mappedResource;
@@ -1047,7 +1081,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                         ErrorMessageAndBreak((char*)"Map for text_ui dynamic vertex buffer failed!");
                     }
 
-                    // Copy the data to the buffer
                     memcpy(mappedResource.pData, vertices, sizeof(TextUiVertex) * 6);
                     deviceContext->Unmap(text_ui_vertex_buffer, 0);
                 }
@@ -1108,7 +1141,6 @@ Vec2 TilemapCoordsToIsometricScreenSpace(Vec2 tilemap_coord) {
 }
 
 void DrawTilemapTile(Texture* texture, Vec2 coordinate) {
-    // ----------------------
     // Constant buffer part
     D3D11_MAPPED_SUBRESOURCE mappedResource = {};
     HRESULT hr = deviceContext->Map(cbuffer_model, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
@@ -1131,7 +1163,6 @@ void DrawTilemapTile(Texture* texture, Vec2 coordinate) {
     deviceContext->Unmap(cbuffer_model, 0);
     deviceContext->VSSetConstantBuffers(1, 1, &cbuffer_model);
 
-    // -------------
     // Shader part
     deviceContext->IASetInputLayout(tilemap_tile_input_layout);
     deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
