@@ -16,12 +16,17 @@
 #include "stb_image.h"
 #define STBI_ONLY_PNG
 
+#define STB_TRUETYPE_IMPLEMENTATION
+#include "stb_truetype.h"
+
 #define ID_FILE_QUIT 9001
 #define ID_FILE_SAVE 9002
 #define ID_FILE_OPEN 9003
 #define ID_EDIT_COPY 9004
 #define ID_EDIT_PASTE 9005
 #define ID_HELP_ABOUT 9006
+
+const int MAX_TEXT_UI_VERTEX_COUNT = 1000;
 
 typedef int i32;
 typedef long long i64;
@@ -81,7 +86,6 @@ struct Texture {
     i32 y;
     i32 channels;
     ImageFileType filetype;
-    ID3D11SamplerState* sampler;
     ID3D11ShaderResourceView* resource_view;
 };
 
@@ -104,6 +108,23 @@ struct Tilemap {
     i32 width;
     i32 height;
     TilemapTile* tiles;
+};
+
+struct FontGlyphInfo {
+    char character;
+    i32 bitmap_width;
+    i32 bitmap_height;
+    i32 x_offset;
+    i32 y_offset;
+    f32 advance;
+};
+
+struct FontAtlasInfo {
+    f32 font_size_px;
+    f32 font_ascent;
+    f32 font_descent;
+    f32 font_linegap;
+    FontGlyphInfo glyphs[96] = {}; 
 };
 
 // -----------------------
@@ -131,6 +152,8 @@ void DrawTilemapTile(Texture* texture, Vec2 coordinate);
 void StrToWideStr(char* str, wchar_t* wresult, int str_count);
 
 Vec2 TilemapCoordsToIsometricScreenSpace(Vec2 tilemap_coord);
+
+unsigned char* LoadFileToPtr(wchar_t* filename, size_t* get_file_size);
 
 // ---------
 // Globals
@@ -177,6 +200,8 @@ ID3D11DeviceContext *deviceContext;
 ID3D11RenderTargetView *renderTargetView;
 D3D11_VIEWPORT render_viewport;
 
+ID3D11SamplerState* g_sampler;
+ID3D11ShaderResourceView* g_font_texture_view = nullptr;
 Texture test_texture_01 = {};
 FLOAT clear_color[] = { 0.1f, 0.1f, 0.1f, 1.0f };
 
@@ -251,21 +276,6 @@ void LoadTextureFromFilepath(Texture* texture, char* filepath) {
 
     if (FAILED(hr)) {
         ErrorMessageAndBreak((char*)"Failed to create shader resource view");
-    }
-
-    D3D11_SAMPLER_DESC samplerDesc = {};
-    samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
-    samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
-    samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
-    samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-    samplerDesc.ComparisonFunc = D3D11_COMPARISON_ALWAYS;
-    samplerDesc.MinLOD = 0;
-    samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
-    
-    hr = id3d11_device->CreateSamplerState(&samplerDesc, &texture->sampler);
-
-    if (FAILED(hr)) {
-        ErrorMessageAndBreak((char*)"Failed to create sampler state.");
     }
 
     texture->x = image_x;
@@ -468,7 +478,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
  * @brief Program main entry.
  */
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
-
     // ---------------------------------
     // Register and create window class
     {
@@ -604,6 +613,24 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         deviceContext->OMSetBlendState(blendState, blendFactor, sampleMask);
     }
 
+    // -----------------------
+    // Create global sampler
+    {
+        D3D11_SAMPLER_DESC samplerDesc = {};
+        samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+        samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+        samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+        samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+        samplerDesc.ComparisonFunc = D3D11_COMPARISON_ALWAYS;
+        samplerDesc.MinLOD = 0;
+        samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
+        
+        HRESULT hr = id3d11_device->CreateSamplerState(&samplerDesc, &g_sampler);
+        if (FAILED(hr)) {
+            ErrorMessageAndBreak((char*)"Failed to create sampler state.");
+        }
+    }
+
     // -------------------------
     // Create constant buffers
     {
@@ -676,29 +703,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         pPSBlob->Release();
 
         // -----------------------
-        // Create text_ui buffer
+        // Create dynamix text_ui buffer
         {
-            TextUiVertex vertices[] = {
-                { DirectX::XMFLOAT4(-0.5f, 0.5f, 0.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 0.0f) },  // Top-left
-                { DirectX::XMFLOAT4(0.5f, 0.5f, 0.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 0.0f) },   // Top-right
-                { DirectX::XMFLOAT4(-0.5f, -0.5f, 0.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 1.0f) }, // Bottom-left
-
-                { DirectX::XMFLOAT4(-0.5f, -0.5f, 0.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 1.0f) }, // Bottom-left
-                { DirectX::XMFLOAT4(0.5f, 0.5f, 0.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 0.0f) },   // Top-right
-                { DirectX::XMFLOAT4(0.5f, -0.5f, 0.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 1.0f) }   // Bottom-right
-            };
-
             D3D11_BUFFER_DESC vertexBufferDesc = {};
-            vertexBufferDesc.Usage = D3D11_USAGE_DEFAULT;
-            vertexBufferDesc.ByteWidth = sizeof(vertices);
+            vertexBufferDesc.Usage = D3D11_USAGE_DYNAMIC;
+            vertexBufferDesc.ByteWidth = sizeof(TextUiVertex) * MAX_TEXT_UI_VERTEX_COUNT;
             vertexBufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-            vertexBufferDesc.CPUAccessFlags = 0;
+            vertexBufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 
-            D3D11_SUBRESOURCE_DATA vertexData = {};
-            vertexData.pSysMem = vertices;
-            hr = id3d11_device->CreateBuffer(&vertexBufferDesc, &vertexData, &text_ui_vertex_buffer);
+            hr = id3d11_device->CreateBuffer(&vertexBufferDesc, nullptr, &text_ui_vertex_buffer);
             if (FAILED(hr)) {
-                ErrorMessageAndBreak((char*)"CreateBuffer for text_ui vertex buffer failed!");
+                ErrorMessageAndBreak((char*)"CreateBuffer for text_ui dynamic vertex buffer failed!");
             }
         }
     }
@@ -778,6 +793,99 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     LoadTextureFromFilepath(
         &test_texture_01, (char*)"G:\\projects\\game\\finite-engine-dev\\resources\\images\\tiles\\grassland_tile_01.png");
+
+    FontAtlasInfo g_debug_font = {};
+    int fontAtlasWidth = 0;
+    int fontAtlasHeight = 0;
+
+    // -----------------
+    // Load font atlas
+    {
+        stbtt_fontinfo font;
+        size_t file_size;
+        unsigned char *fontBuffer = LoadFileToPtr(
+            (wchar_t*)L"G:\\projects\\game\\finite-engine-dev\\resources\\fonts\\Roboto-Regular.ttf",
+            &file_size);
+
+        stbtt_InitFont(&font, fontBuffer, stbtt_GetFontOffsetForIndex(fontBuffer, 0));
+
+        float desired_pixel_height = 64.0f;
+        float scale = stbtt_ScaleForPixelHeight(&font, desired_pixel_height);
+
+        int ascent, descent, lineGap;
+        stbtt_GetFontVMetrics(&font, &ascent, &descent, &lineGap);
+        
+        g_debug_font.font_size_px = desired_pixel_height;
+        g_debug_font.font_ascent = ascent * scale;
+        g_debug_font.font_descent = descent * scale;
+        g_debug_font.font_linegap = lineGap * scale;
+
+        for (int c = 32; c < 128; c++) {
+            int codepoint = c;
+            int width, height, xoffset, yoffset;
+            unsigned char *bitmap = stbtt_GetCodepointBitmap(&font, 0, scale, codepoint, &width, &height, &xoffset, &yoffset);
+
+            int advanceWidth, leftSideBearing;
+            stbtt_GetCodepointHMetrics(&font, codepoint, &advanceWidth, &leftSideBearing);
+            float advanceScaled = ((f32)advanceWidth * scale);      
+
+            int glyph_index = c - 32;
+            g_debug_font.glyphs[glyph_index].advance = advanceScaled;
+            g_debug_font.glyphs[glyph_index].bitmap_height = height;
+            g_debug_font.glyphs[glyph_index].bitmap_width = width;
+            g_debug_font.glyphs[glyph_index].character = c;
+            g_debug_font.glyphs[glyph_index].x_offset = xoffset;
+            g_debug_font.glyphs[glyph_index].y_offset = -1 * yoffset;
+
+            fontAtlasWidth += width;
+            if (fontAtlasHeight < height) {
+                fontAtlasHeight = height;
+            }
+
+            stbtt_FreeBitmap(bitmap, nullptr);
+        }
+
+        // ---------------
+        // Atlas texture
+        {
+            int width, height, xoffset, yoffset;
+            unsigned char* bitmap = stbtt_GetCodepointBitmap(&font, 0, scale, 'b', &width, &height, &xoffset, &yoffset);
+
+            D3D11_TEXTURE2D_DESC desc = {};
+            desc.Width = width;
+            desc.Height = height;
+            desc.MipLevels = 1;
+            desc.ArraySize = 1;
+            desc.Format = DXGI_FORMAT_R8_UNORM;
+            desc.SampleDesc.Count = 1;
+            desc.Usage = D3D11_USAGE_DEFAULT;
+            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            desc.CPUAccessFlags = 0;
+
+            D3D11_SUBRESOURCE_DATA initData = {};
+            initData.pSysMem = bitmap;
+            initData.SysMemPitch = width; // The distance in bytes between the start of each line of the texture
+            
+            ID3D11Texture2D* g_font_texture = nullptr;
+            HRESULT hr = id3d11_device->CreateTexture2D(&desc, &initData, &g_font_texture);
+            if (FAILED(hr)) {
+                ErrorMessageAndBreak((char*)"CreateTexture2D font atlas failed!");
+            }
+
+            D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+            srvDesc.Format = desc.Format;
+            srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+            srvDesc.Texture2D.MostDetailedMip = 0;
+            srvDesc.Texture2D.MipLevels = 1;
+
+            hr = id3d11_device->CreateShaderResourceView(g_font_texture, &srvDesc, &g_font_texture_view);
+            if (FAILED(hr)) {
+                ErrorMessageAndBreak((char*)"CreateShaderResourceView font atlas failed!");
+            }
+
+            g_font_texture->Release();
+        }
+    }
 
     // -----------
     // Game loop
@@ -861,13 +969,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             if (frame_input.arrow_right) {
                 viewport_camera.position.x -= 10.0f * frame_delta;
             }
-
-            // -----------------------------
-            // Get cursor tilemap position
-            {
-                viewport_mouse.x;
-                viewport_mouse.y;
-            }
         }
 
         // -----------------------
@@ -910,28 +1011,55 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 deviceContext->VSSetConstantBuffers(0, 1, &cbuffer_view_projection);
             }
 
-            Tilemap map {
-                .width = 5,
-                .height = 4,
-            };
+            // ---------------
+            // Draw tilemaps
+            {
+                Tilemap map {
+                    .width = 5,
+                    .height = 4,
+                };
 
-            for (int y = 0; y < map.height; y++) {
-                for (int x = 0; x < map.width; x++) {
-                    Vec2 coordinate = {(f32)x, f32(y)};
-                    DrawTilemapTile(&test_texture_01, coordinate);
+                for (int y = 0; y < map.height; y++) {
+                    for (int x = 0; x < map.width; x++) {
+                        Vec2 coordinate = {(f32)x, f32(y)};
+                        DrawTilemapTile(&test_texture_01, coordinate);
+                    }
                 }
             }
 
             // Font test
             {
+                // Buffer data
+                {
+                    TextUiVertex vertices[] = {
+                        { DirectX::XMFLOAT4(-0.5f, 0.5f, 0.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 0.0f) },  // Top-left
+                        { DirectX::XMFLOAT4(0.5f, 0.5f, 0.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 0.0f) },   // Top-right
+                        { DirectX::XMFLOAT4(-0.5f, -0.5f, 0.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 1.0f) }, // Bottom-left
+
+                        { DirectX::XMFLOAT4(-0.5f, -0.5f, 0.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 1.0f) }, // Bottom-left
+                        { DirectX::XMFLOAT4(0.5f, 0.5f, 0.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 0.0f) },   // Top-right
+                        { DirectX::XMFLOAT4(0.5f, -0.5f, 0.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 1.0f) }   // Bottom-right
+                    };
+
+                    D3D11_MAPPED_SUBRESOURCE mappedResource;
+                    HRESULT hr = deviceContext->Map(text_ui_vertex_buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
+                    if (FAILED(hr)) {
+                        ErrorMessageAndBreak((char*)"Map for text_ui dynamic vertex buffer failed!");
+                    }
+
+                    // Copy the data to the buffer
+                    memcpy(mappedResource.pData, vertices, sizeof(TextUiVertex) * 6);
+                    deviceContext->Unmap(text_ui_vertex_buffer, 0);
+                }
+
                 deviceContext->IASetInputLayout(text_ui_input_layout);
                 deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
                 deviceContext->VSSetShader(text_ui_vertex_shader, nullptr, 0);
                 deviceContext->PSSetShader(text_ui_pixel_shader, nullptr, 0);
 
-                deviceContext->PSSetShaderResources(0, 1, &test_texture_01.resource_view);
-                deviceContext->PSSetSamplers(0, 1, &test_texture_01.sampler);
+                deviceContext->PSSetShaderResources(0, 1, &g_font_texture_view);
+                deviceContext->PSSetSamplers(0, 1, &g_sampler);
 
                 UINT stride = sizeof(TextUiVertex);
                 UINT offset = 0;
@@ -979,7 +1107,6 @@ Vec2 TilemapCoordsToIsometricScreenSpace(Vec2 tilemap_coord) {
     return result;
 }
 
-
 void DrawTilemapTile(Texture* texture, Vec2 coordinate) {
     // ----------------------
     // Constant buffer part
@@ -1013,10 +1140,41 @@ void DrawTilemapTile(Texture* texture, Vec2 coordinate) {
     deviceContext->PSSetShader(tilemap_tile_pixel_shader, nullptr, 0);
 
     deviceContext->PSSetShaderResources(0, 1, &texture->resource_view);
-    deviceContext->PSSetSamplers(0, 1, &texture->sampler);
+    deviceContext->PSSetSamplers(0, 1, &g_sampler);
 
     UINT stride = sizeof(TilemapTileVertex);
     UINT offset = 0;
     deviceContext->IASetVertexBuffers(0, 1, &tilemap_tile_vertex_buffer, &stride, &offset);
     deviceContext->Draw(6, 0);
+}
+
+unsigned char* LoadFileToPtr(wchar_t* filename, size_t* get_file_size) {
+    HANDLE file = CreateFileW(filename, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) {
+        ErrorMessageAndBreak((char*)"CreateFileW failed!");
+    }
+
+    DWORD fileSize = GetFileSize(file, NULL);
+    if (fileSize == INVALID_FILE_SIZE) {
+        ErrorMessageAndBreak((char*)"CreateFileW failed!");
+    }
+
+    unsigned char* buffer = (unsigned char*)malloc(fileSize);
+    if (!buffer) {
+        ErrorMessageAndBreak((char*)"CreateFileW failed!");
+    }
+
+    DWORD bytesRead;
+    BOOL success = ReadFile(file, buffer, fileSize, &bytesRead, NULL);
+    if (!success || bytesRead != fileSize) {
+        ErrorMessageAndBreak((char*)"CreateFileW failed!");
+    }
+
+    CloseHandle(file);
+
+    if (get_file_size) {
+        *get_file_size = fileSize;
+    }
+
+    return buffer;
 }
