@@ -131,7 +131,8 @@ struct FontGlyphInfo {
 };
 
 struct FontAtlasInfo {
-    f32 font_size_px;
+    ID3D11ShaderResourceView* texture_view = nullptr;
+    i32 font_size_px;
     f32 font_ascent;
     f32 font_descent;
     f32 font_linegap;
@@ -168,8 +169,18 @@ unsigned char* LoadFileToPtr(wchar_t* filename, size_t* get_file_size);
 
 Vec2 ScreenPxToNDC(int x, int y);
 
+Vec2 DrawTextToScreen(char* text, Vec2 screen_pos, FontAtlasInfo* font_info);
+
+FontAtlasInfo LoadFontAtlas(char* filepath, float pixel_height);
+
+f32 GetVWInPx(f32 vw);
+
+f32 GetVHInPx(f32 vh);
+
 // ---------
 // Globals
+
+FontAtlasInfo g_debug_font;
 
 Window g_main_window = {
     .width_px = 1600,
@@ -200,7 +211,6 @@ ID3D11RenderTargetView *renderTargetView;
 D3D11_VIEWPORT render_viewport;
 
 ID3D11SamplerState* g_sampler;
-ID3D11ShaderResourceView* g_font_texture_view = nullptr;
 Texture test_texture_01 = {};
 FLOAT clear_color[] = { 1.0f, 0.0f, 1.0f, 1.0f };
 
@@ -809,126 +819,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         }
     }
 
-    LoadTextureFromFilepath(
-        &test_texture_01, (char*)"G:\\projects\\game\\finite-engine-dev\\resources\\images\\tiles\\grassland_tile_01.png");
-
-    FontAtlasInfo g_debug_font = {};
-    int fontAtlasWidth = 0;
-    int fontAtlasHeight = 0;
-
-    // -----------------
-    // Load font atlas
-    {
-        stbtt_fontinfo font;
-        size_t file_size;
-        unsigned char *fontBuffer = LoadFileToPtr(
-            (wchar_t*)L"G:\\projects\\game\\finite-engine-dev\\resources\\fonts\\Roboto-Regular.ttf",
-            &file_size);
-
-        stbtt_InitFont(&font, fontBuffer, stbtt_GetFontOffsetForIndex(fontBuffer, 0));
-
-        float desired_pixel_height = 64.0f;
-        float scale = stbtt_ScaleForPixelHeight(&font, desired_pixel_height);
-
-        int ascent, descent, lineGap;
-        stbtt_GetFontVMetrics(&font, &ascent, &descent, &lineGap);
-        
-        g_debug_font.font_size_px = desired_pixel_height;
-        g_debug_font.font_ascent = ascent * scale;
-        g_debug_font.font_descent = descent * scale;
-        g_debug_font.font_linegap = lineGap * scale;
-
-        for (int c = 32; c < 128; c++) {
-            int codepoint = c;
-            int width, height, xoffset, yoffset;
-            unsigned char *bitmap = stbtt_GetCodepointBitmap(&font, 0, scale, codepoint, &width, &height, &xoffset, &yoffset);
-
-            int advanceWidth, leftSideBearing;
-            stbtt_GetCodepointHMetrics(&font, codepoint, &advanceWidth, &leftSideBearing);
-            float advanceScaled = ((f32)advanceWidth * scale);      
-
-            int glyph_index = c - 32;
-            g_debug_font.glyphs[glyph_index].advance = advanceScaled;
-            g_debug_font.glyphs[glyph_index].bitmap_height = height;
-            g_debug_font.glyphs[glyph_index].bitmap_width = width;
-            g_debug_font.glyphs[glyph_index].character = c;
-            g_debug_font.glyphs[glyph_index].x_offset = xoffset;
-            g_debug_font.glyphs[glyph_index].y_offset = -1 * yoffset;
-
-            fontAtlasWidth += width;
-            if (fontAtlasHeight < height) {
-                fontAtlasHeight = height;
-            }
-
-            stbtt_FreeBitmap(bitmap, nullptr);
-        }
-
-        g_debug_font.font_atlas_width = fontAtlasWidth;
-        g_debug_font.font_atlas_height = fontAtlasHeight;
-
-        int atlasX = 0;
-        unsigned char* font_atlas_buffer = (unsigned char*)calloc(fontAtlasHeight * fontAtlasWidth, sizeof(unsigned char));
-
-        for (int c = 32; c < 128; c++) {
-            int codepoint = c;
-            int width, height, xoffset, yoffset;
-            unsigned char *bitmap = stbtt_GetCodepointBitmap(&font, 0, scale, codepoint, &width, &height, &xoffset, &yoffset);
-
-            for (int row = 0; row < height; row++) {
-                int dest_index = (g_debug_font.font_atlas_width * row) + atlasX;
-                unsigned char *dest = &font_atlas_buffer[dest_index];
-                int src_index = width * row;
-                unsigned char *src = &bitmap[src_index];
-                memcpy(dest, src, width);
-            }
-
-            f32 uv_x0 = (f32)atlasX / (f32)g_debug_font.font_atlas_width;
-            f32 uv_y0 = 0.0f;
-            f32 uv_x1 = uv_x0 + (f32)width / (f32)g_debug_font.font_atlas_width;
-            f32 uv_y1 = (f32)height / (f32)g_debug_font.font_atlas_height;
-
-            int glyph_index = c - 32;
-            g_debug_font.glyphs[glyph_index].uv_x0 = uv_x0;
-            g_debug_font.glyphs[glyph_index].uv_y0 = uv_y0;
-            g_debug_font.glyphs[glyph_index].uv_x1 = uv_x1;
-            g_debug_font.glyphs[glyph_index].uv_y1 = uv_y1;
-
-            atlasX += width;
-            stbtt_FreeBitmap(bitmap, nullptr);
-        }
-
-        D3D11_TEXTURE2D_DESC desc = {};
-        desc.Width = g_debug_font.font_atlas_width;
-        desc.Height = g_debug_font.font_atlas_height;
-        desc.MipLevels = 1;
-        desc.ArraySize = 1;
-        desc.Format = DXGI_FORMAT_R8_UNORM;
-        desc.SampleDesc.Count = 1;
-        desc.Usage = D3D11_USAGE_DEFAULT;
-        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-        desc.CPUAccessFlags = 0;
-        D3D11_SUBRESOURCE_DATA initData = {};
-        initData.pSysMem = font_atlas_buffer;
-        initData.SysMemPitch = g_debug_font.font_atlas_width; // The distance in bytes between the start of each line of the texture
-        
-        ID3D11Texture2D* g_font_texture = nullptr;
-        HRESULT hr = id3d11_device->CreateTexture2D(&desc, &initData, &g_font_texture);
-        if (FAILED(hr)) {
-            ErrorMessageAndBreak((char*)"CreateTexture2D font atlas failed!");
-        }
-
-        D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-        srvDesc.Format = desc.Format;
-        srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-        srvDesc.Texture2D.MostDetailedMip = 0;
-        srvDesc.Texture2D.MipLevels = 1;
-        hr = id3d11_device->CreateShaderResourceView(g_font_texture, &srvDesc, &g_font_texture_view);
-        if (FAILED(hr)) {
-            ErrorMessageAndBreak((char*)"CreateShaderResourceView font atlas failed!");
-        }
-
-        g_font_texture->Release();
-    }
+    LoadTextureFromFilepath(&test_texture_01, (char*)"G:\\projects\\game\\finite-engine-dev\\resources\\images\\tiles\\grassland_tile_01.png");
+    
+    float debug_font_size = GetVHInPx(1.5f);
+    g_debug_font = LoadFontAtlas((char*)"G:\\projects\\game\\finite-engine-dev\\resources\\fonts\\Roboto-Light.ttf", debug_font_size);
 
     ShowWindow(main_window_handle, nCmdShow);
     UpdateWindow(main_window_handle);
@@ -1099,8 +993,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             // Draw tilemaps
             {
                 Tilemap map {
-                    .width = 5,
-                    .height = 4,
+                    .width = 8,
+                    .height = 7,
                 };
 
                 for (int y = 0; y < map.height; y++) {
@@ -1111,53 +1005,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 }
             }
 
-
-            // Font test
-            {
-                char c = 'f';
-                int x = 10;
-                int y = 10;
-
-                FontGlyphInfo glyph = g_debug_font.glyphs[c - 32];
-
-                auto top_left = ScreenPxToNDC(x, y);
-                auto top_right = ScreenPxToNDC(x + glyph.bitmap_width, y);
-                auto bot_left = ScreenPxToNDC(x, y + glyph.bitmap_height);
-                auto bot_right = ScreenPxToNDC(x + glyph.bitmap_width, y + glyph.bitmap_height);
-
-                TextUiVertex vertices[] = {
-                    { DirectX::XMFLOAT4(top_left.x, top_left.y, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x0, glyph.uv_y0) },  // Top-left
-                    { DirectX::XMFLOAT4(top_right.x, top_right.y, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x1, glyph.uv_y0) },   // Top-right
-                    { DirectX::XMFLOAT4(bot_left.x, bot_left.y, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x0, glyph.uv_y1) }, // Bottom-left
-
-                    { DirectX::XMFLOAT4(bot_left.x, bot_left.y, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x0, glyph.uv_y1) }, // Bottom-left
-                    { DirectX::XMFLOAT4(top_right.x, top_right.y, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x1, glyph.uv_y0) },   // Top-right
-                    { DirectX::XMFLOAT4(bot_right.x, bot_right.y, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x1, glyph.uv_y1) }   // Bottom-right
-                };
-
-                D3D11_MAPPED_SUBRESOURCE mappedResource;
-                HRESULT hr = deviceContext->Map(text_ui_vertex_buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
-                if (FAILED(hr)) {
-                    ErrorMessageAndBreak((char*)"Map for text_ui dynamic vertex buffer failed!");
-                }
-
-                memcpy(mappedResource.pData, vertices, sizeof(TextUiVertex) * 6);
-                deviceContext->Unmap(text_ui_vertex_buffer, 0);
-
-                deviceContext->IASetInputLayout(text_ui_input_layout);
-                deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
-                deviceContext->VSSetShader(text_ui_vertex_shader, nullptr, 0);
-                deviceContext->PSSetShader(text_ui_pixel_shader, nullptr, 0);
-
-                deviceContext->PSSetShaderResources(0, 1, &g_font_texture_view);
-                deviceContext->PSSetSamplers(0, 1, &g_sampler);
-
-                UINT stride = sizeof(TextUiVertex);
-                UINT offset = 0;
-                deviceContext->IASetVertexBuffers(0, 1, &text_ui_vertex_buffer, &stride, &offset);
-                deviceContext->Draw(6, 0);
-            }
+            const char* text01 = "Janne\nnew line vali lyonti testi.\n!kakaka jajaja";
+            Vec2 cursor01 = { 50.0f, 50.0f };
+            DrawTextToScreen((char*)text01, cursor01, &g_debug_font);
 
             swapChain->Present(1, 0);
         }
@@ -1166,6 +1016,201 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
 
     return main_window_message.wParam;
+}
+
+FontAtlasInfo LoadFontAtlas(char* filepath, float pixel_height) {
+    FontAtlasInfo result = {};
+
+    int used_height = (int)pixel_height;
+
+    stbtt_fontinfo font;
+    size_t file_size;
+    wchar_t wide_buffer[256] = {};
+    StrToWideStr(filepath, wide_buffer, 256);
+    unsigned char *fontBuffer = LoadFileToPtr(wide_buffer, &file_size);
+
+    stbtt_InitFont(&font, fontBuffer, stbtt_GetFontOffsetForIndex(fontBuffer, 0));
+
+    float scale = stbtt_ScaleForPixelHeight(&font, (float)used_height);
+    int ascent, descent, lineGap;
+    stbtt_GetFontVMetrics(&font, &ascent, &descent, &lineGap);
+        
+    result.font_size_px = used_height;
+    result.font_ascent = ascent * scale;
+    result.font_descent = descent * scale;
+    result.font_linegap = lineGap * scale;
+
+    int fontAtlasWidth = 0;
+    int fontAtlasHeight = 0;
+
+    for (int c = 32; c < 128; c++) {
+        int codepoint = c;
+        int width, height, xoffset, yoffset;
+        unsigned char *bitmap = stbtt_GetCodepointBitmap(&font, 0, scale, codepoint, &width, &height, &xoffset, &yoffset);
+
+        int advanceWidth, leftSideBearing;
+        stbtt_GetCodepointHMetrics(&font, codepoint, &advanceWidth, &leftSideBearing);
+        float advanceScaled = ((f32)advanceWidth * scale);      
+
+        int glyph_index = c - 32;
+        result.glyphs[glyph_index].advance = advanceScaled;
+        result.glyphs[glyph_index].bitmap_height = height;
+        result.glyphs[glyph_index].bitmap_width = width;
+        result.glyphs[glyph_index].character = c;
+        result.glyphs[glyph_index].x_offset = xoffset;
+        result.glyphs[glyph_index].y_offset = -1 * yoffset;
+
+        fontAtlasWidth += width;
+        if (fontAtlasHeight < height) {
+            fontAtlasHeight = height;
+        }
+
+        stbtt_FreeBitmap(bitmap, nullptr);
+    }
+
+    result.font_atlas_width = fontAtlasWidth;
+    result.font_atlas_height = fontAtlasHeight;
+
+    int atlasX = 0;
+    unsigned char* font_atlas_buffer = (unsigned char*)calloc(fontAtlasHeight * fontAtlasWidth, sizeof(unsigned char));
+
+    for (int c = 32; c < 128; c++) {
+        int codepoint = c;
+        int width, height, xoffset, yoffset;
+        unsigned char *bitmap = stbtt_GetCodepointBitmap(&font, 0, scale, codepoint, &width, &height, &xoffset, &yoffset);
+
+        for (int row = 0; row < height; row++) {
+            int dest_index = (result.font_atlas_width * row) + atlasX;
+            unsigned char *dest = &font_atlas_buffer[dest_index];
+            int src_index = width * row;
+            unsigned char *src = &bitmap[src_index];
+            memcpy(dest, src, width);
+        }
+
+        f32 uv_x0 = (f32)atlasX / (f32)result.font_atlas_width;
+        f32 uv_y0 = 0.0f;
+        f32 uv_x1 = uv_x0 + (f32)width / (f32)result.font_atlas_width;
+        f32 uv_y1 = (f32)height / (f32)result.font_atlas_height;
+
+        int glyph_index = c - 32;
+        result.glyphs[glyph_index].uv_x0 = uv_x0;
+        result.glyphs[glyph_index].uv_y0 = uv_y0;
+        result.glyphs[glyph_index].uv_x1 = uv_x1;
+        result.glyphs[glyph_index].uv_y1 = uv_y1;
+
+        atlasX += width;
+        stbtt_FreeBitmap(bitmap, nullptr);
+    }
+
+    result.glyphs[32].advance = result.glyphs['M' - 32].bitmap_width / 2.0f; // Spacebar
+
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = result.font_atlas_width;
+    desc.Height = result.font_atlas_height;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_R8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    desc.CPUAccessFlags = 0;
+    D3D11_SUBRESOURCE_DATA initData = {};
+    initData.pSysMem = font_atlas_buffer;
+    initData.SysMemPitch = result.font_atlas_width; // The distance in bytes between the start of each line of the texture
+        
+    ID3D11Texture2D* g_font_texture = nullptr;
+    HRESULT hr = id3d11_device->CreateTexture2D(&desc, &initData, &g_font_texture);
+    if (FAILED(hr)) {
+        ErrorMessageAndBreak((char*)"CreateTexture2D font atlas failed!");
+    }
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = desc.Format;
+    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MostDetailedMip = 0;
+    srvDesc.Texture2D.MipLevels = 1;
+
+    hr = id3d11_device->CreateShaderResourceView(g_font_texture, &srvDesc, &result.texture_view);
+    if (FAILED(hr)) {
+        ErrorMessageAndBreak((char*)"CreateShaderResourceView font atlas failed!");
+    }
+
+    g_font_texture->Release();
+
+    char buffer[256] = {};
+    sprintf(buffer, "Font loaded with texture atlas => width: %d, height: %d\n", result.font_atlas_width, result.font_atlas_height);
+    DebugMessage(buffer);
+
+    return result;
+}
+
+Vec2 DrawTextToScreen(char* text, Vec2 screen_pos, FontAtlasInfo* font_info) {
+    Vec2 cursor = {
+        .x = screen_pos.x,
+        .y = screen_pos.y
+    };
+
+    Vec2 cursor_original = {
+        .x = screen_pos.x,
+        .y = screen_pos.y
+    };
+    
+    for (char* p = (char*)text; *p != '\0'; p++) {
+        char c = *p;
+
+        if (c == '\n') {
+            cursor.x = cursor_original.x;
+            cursor.y += font_info->font_size_px;
+        }
+
+        FontGlyphInfo glyph = font_info->glyphs[c - 32];
+
+        i32 px_x0 = cursor.x + glyph.x_offset;
+        i32 px_x1 = px_x0 + glyph.bitmap_width;
+        i32 px_y0 = cursor.y - glyph.y_offset;
+        i32 px_y1 = px_y0 + glyph.bitmap_height;
+
+        auto top_left = ScreenPxToNDC(px_x0, px_y0);
+        auto top_right = ScreenPxToNDC(px_x1, px_y0);
+        auto bot_left = ScreenPxToNDC(px_x0, px_y1);
+        auto bot_right = ScreenPxToNDC(px_x1, px_y1);
+
+        TextUiVertex vertices[] = {
+            { DirectX::XMFLOAT4(top_left.x, top_left.y, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x0, glyph.uv_y0) },  // Top-left
+            { DirectX::XMFLOAT4(top_right.x, top_right.y, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x1, glyph.uv_y0) },   // Top-right
+            { DirectX::XMFLOAT4(bot_left.x, bot_left.y, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x0, glyph.uv_y1) }, // Bottom-lef   
+            { DirectX::XMFLOAT4(bot_left.x, bot_left.y, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x0, glyph.uv_y1) }, // Bottom-left
+            { DirectX::XMFLOAT4(top_right.x, top_right.y, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x1, glyph.uv_y0) },   // Top-right
+            { DirectX::XMFLOAT4(bot_right.x, bot_right.y, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x1, glyph.uv_y1) }   // Bottom-right
+        };
+
+        D3D11_MAPPED_SUBRESOURCE mappedResource;
+        HRESULT hr = deviceContext->Map(text_ui_vertex_buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
+        if (FAILED(hr)) {
+             ErrorMessageAndBreak((char*)"Map for text_ui dynamic vertex buffer failed!");
+        }
+
+        memcpy(mappedResource.pData, vertices, sizeof(TextUiVertex) * 6);
+        deviceContext->Unmap(text_ui_vertex_buffer, 0);
+
+        deviceContext->IASetInputLayout(text_ui_input_layout);
+        deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+        deviceContext->VSSetShader(text_ui_vertex_shader, nullptr, 0);
+        deviceContext->PSSetShader(text_ui_pixel_shader, nullptr, 0);
+
+        deviceContext->PSSetShaderResources(0, 1, &font_info->texture_view);
+        deviceContext->PSSetSamplers(0, 1, &g_sampler);
+
+        UINT stride = sizeof(TextUiVertex);
+        UINT offset = 0;
+        deviceContext->IASetVertexBuffers(0, 1, &text_ui_vertex_buffer, &stride, &offset);
+        deviceContext->Draw(6, 0);
+
+        cursor.x += glyph.advance;
+    }
+
+    return cursor;
 }
 
 Vec2 ScreenPxToNDC(int x, int y) {
@@ -1253,4 +1298,12 @@ unsigned char* LoadFileToPtr(wchar_t* filename, size_t* get_file_size) {
     }
 
     return buffer;
+}
+
+f32 GetVWInPx(f32 vw) {
+    return (vw / 100.0f) * (f32)g_main_window.width_px;
+}
+
+f32 GetVHInPx(f32 vh) {
+    return (vh / 100.0f) * (f32)g_main_window.height_px;
 }
