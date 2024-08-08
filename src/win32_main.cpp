@@ -177,15 +177,15 @@ f32 GetVWInPx(f32 vw);
 
 f32 GetVHInPx(f32 vh);
 
+void LoadGlobalFonts();
+
 // ---------
 // Globals
 
 FontAtlasInfo g_debug_font;
 
-Window g_main_window = {
-    .width_px = 1600,
-    .height_px = 1200,
-};
+Window g_main_window = {};
+Window g_new_window_size = {};
 
 LARGE_INTEGER g_frequency;
 LARGE_INTEGER g_lastTime;
@@ -243,6 +243,11 @@ Camera2D viewport_camera = {
 
 // --------------------------
 // Function implementations
+
+void LoadGlobalFonts() {
+    float debug_font_size = GetVHInPx(1.5f);
+    g_debug_font = LoadFontAtlas((char*)"G:\\projects\\game\\finite-engine-dev\\resources\\fonts\\Roboto-Light.ttf", debug_font_size);
+}
 
 void LoadTextureFromFilepath(Texture* texture, char* filepath) {
     HRESULT hr;
@@ -387,7 +392,7 @@ void ResizeViewport(int width, int height) {
     render_viewport.MaxDepth = 1.0f;
 
     char buffer[128] = {};
-    sprintf(buffer, "Viewport resize event, x: %.2f, y: %.2f\n", width, height);
+    sprintf(buffer, "Viewport resize event, x: %d, y: %d\n", width, height);
     DebugMessage(buffer);
 }
 
@@ -411,19 +416,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         case WM_ENTERSIZEMOVE: {
             g_isResizing = true;
-            DebugMessage((char*)"ENTER RESIZE\n");
             break;
         }
 
         case WM_EXITSIZEMOVE: {
             g_isResizing = false;
-            char buffer[128] = {};
-            sprintf(buffer, "Window resize event, x: %d, y: %d\n", g_main_window.width_px, g_main_window.height_px);
-            DebugMessage(buffer);
             if (id3d11_device && swapChain) {
-                ResizeViewport(g_main_window.width_px, g_main_window.height_px);
+                if (g_main_window.width_px != g_new_window_size.width_px || g_main_window.height_px != g_new_window_size.height_px) {
+                    g_main_window.width_px = g_new_window_size.width_px;
+                    g_main_window.height_px = g_new_window_size.height_px;
+                    ResizeViewport(g_main_window.width_px, g_main_window.height_px);
+                    LoadGlobalFonts();
+                }
             }
-            DebugMessage((char*)"EXIT RESIZE\n");
             break;
         }
 
@@ -431,8 +436,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (wParam != SIZE_MINIMIZED) {
                 UINT width = LOWORD(lParam);
                 UINT height = HIWORD(lParam);
-                g_main_window.width_px = (i32)width;
-                g_main_window.height_px = (i32)height;
+                g_new_window_size.width_px = (i32)width;
+                g_new_window_size.height_px = (i32)height;
             }
             break;
         }
@@ -446,6 +451,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
     return 0;
 }
+
+bool isFullscreen = false;
 
 /**
  * @brief Program main entry.
@@ -470,12 +477,37 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             return 0;
         }
 
-        main_window_handle = CreateWindowW(
-            window_class_name, window_title,
-            WS_OVERLAPPEDWINDOW,
-            CW_USEDEFAULT, CW_USEDEFAULT, g_main_window.width_px, g_main_window.height_px,
-            NULL, NULL, hInstance, NULL
-        );
+        DWORD style, exStyle;
+        int xPos, yPos;
+
+        if (isFullscreen) {
+            style = WS_POPUP;
+            exStyle = WS_EX_APPWINDOW;
+
+            g_main_window.width_px = GetSystemMetrics(SM_CXSCREEN);
+            g_main_window.height_px = GetSystemMetrics(SM_CYSCREEN);
+            xPos = 0;
+            yPos = 0;
+        }
+        else {
+            style = WS_OVERLAPPEDWINDOW;
+            exStyle = WS_EX_APPWINDOW | WS_EX_WINDOWEDGE;
+
+            g_main_window.width_px = 1200;
+            g_main_window.height_px = 800; 
+
+            // Center the window on the screen
+            xPos = (GetSystemMetrics(SM_CXSCREEN) - g_main_window.width_px) / 2;
+            yPos = (GetSystemMetrics(SM_CYSCREEN) - g_main_window.height_px) / 2;
+        }
+
+        RECT windowRect = {0, 0, g_main_window.width_px, g_main_window.height_px};
+        AdjustWindowRectEx(&windowRect, style, FALSE, exStyle);
+
+        main_window_handle = CreateWindowExW(
+            exStyle, window_class_name, window_title, style,
+            xPos, yPos, windowRect.right - windowRect.left, windowRect.bottom - windowRect.top,
+            NULL, NULL, hInstance, NULL);
 
         if (main_window_handle == NULL) {
             ErrorMessageAndBreak((char*)"Window Creation Failed!");
@@ -821,12 +853,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     LoadTextureFromFilepath(&test_texture_01, (char*)"G:\\projects\\game\\finite-engine-dev\\resources\\images\\tiles\\grassland_tile_01.png");
     
-    float debug_font_size = GetVHInPx(1.5f);
-    g_debug_font = LoadFontAtlas((char*)"G:\\projects\\game\\finite-engine-dev\\resources\\fonts\\Roboto-Light.ttf", debug_font_size);
-
     ShowWindow(main_window_handle, nCmdShow);
     UpdateWindow(main_window_handle);
-    ResizeViewport(g_main_window.width_px, g_main_window.height_px);
+
+    LoadGlobalFonts();
+
 
     // -----------
     // Game loop
@@ -865,6 +896,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
                 if (IsKeyPressed(VK_DOWN)) {
                     frame_input.arrow_down = true;
+                }
+
+                if (IsKeyPressed(VK_ESCAPE)) {
+                    PostQuitMessage(0);
                 }
             }
         }
@@ -927,10 +962,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 f32 aspect_ratio = (f32)g_main_window.width_px / (f32)g_main_window.height_px;
                 float viewWidth = 2.0f * viewport_camera.zoom;
                 float viewHeight = viewWidth / aspect_ratio;
-
-                char buffer[255] = {};
-                sprintf(buffer, "Aspect ratio: %.2f, Width: %.2f, Height: %.2f\n", aspect_ratio, viewWidth, viewHeight);
-                DebugMessage(buffer);
 
                 DirectX::XMMATRIX translationMatrix = DirectX::XMMatrixTranslation(viewport_camera.position.x, viewport_camera.position.y, 0.0f);
                 DirectX::XMMATRIX viewMatrix = DirectX::XMMatrixIdentity();
