@@ -50,6 +50,8 @@ struct Window {
 struct Viewport {
     f32 aspect_width;
     f32 aspect_height;
+    f32 width_px;
+    f32 height_px;
     f32 GetAspect() {
         return aspect_width / aspect_height;
     }
@@ -108,6 +110,11 @@ struct TilemapTileVertex {
 struct TextUiVertex {
     DirectX::XMFLOAT4 Pos;
     DirectX::XMFLOAT2 TexCoord;
+};
+
+struct RectangleVertex {
+    DirectX::XMFLOAT4 position;
+    DirectX::XMFLOAT4 color;
 };
 
 struct TilemapTile {
@@ -169,6 +176,8 @@ Vec2 TilemapCoordsToIsometricScreenSpace(Vec2 tilemap_coord);
 
 unsigned char* LoadFileToPtr(wchar_t* filename, size_t* get_file_size);
 
+Vec2 ScreenPxToNDC(int x, int y);
+
 // ---------
 // Globals
 
@@ -192,8 +201,10 @@ Window g_main_window = {
 };
 
 Viewport g_viewport = {
-    g_viewport.aspect_width = 4.0f,
-    g_viewport.aspect_height = 3.0f,
+    .aspect_width = 4.0f,
+    .aspect_height = 3.0f,
+    .width_px = (f32)g_main_window.width_px,
+    .height_px = (f32)g_main_window.height_px,
 };
 
 
@@ -223,7 +234,7 @@ D3D11_VIEWPORT render_viewport;
 ID3D11SamplerState* g_sampler;
 ID3D11ShaderResourceView* g_font_texture_view = nullptr;
 Texture test_texture_01 = {};
-FLOAT clear_color[] = { 0.1f, 0.1f, 0.1f, 1.0f };
+FLOAT clear_color[] = { 1.0f, 0.0f, 1.0f, 1.0f };
 
 ID3D11VertexShader* tilemap_tile_vertex_shader;
 ID3D11PixelShader* tilemap_tile_pixel_shader;
@@ -234,6 +245,11 @@ ID3D11VertexShader* text_ui_vertex_shader;
 ID3D11PixelShader* text_ui_pixel_shader;
 ID3D11Buffer* text_ui_vertex_buffer;
 ID3D11InputLayout* text_ui_input_layout;
+
+ID3D11VertexShader* rectangle_vertex_shader;
+ID3D11PixelShader* rectangle_pixel_shader;
+ID3D11Buffer* rectangle_vertex_buffer;
+ID3D11InputLayout* rectangle_input_layout;
 
 wchar_t open_filename_path[260] = {};
 OPENFILENAMEW open_filename_struct;
@@ -361,7 +377,7 @@ bool IsKeyPressed(int key) {
     return (state & 0x8000) != 0;
 }
 
-void ResizeDirectXViewport(int width, int height) {
+void ResizeViewport(int width, int height) {
     HRESULT hr;
     renderTargetView->Release();
     renderTargetView = nullptr;
@@ -385,10 +401,10 @@ void ResizeDirectXViewport(int width, int height) {
     backBuffer->Release();
     deviceContext->OMSetRenderTargets(1, &renderTargetView, nullptr);
 
-    auto screen_aspect_ratio = (float)width / (float)height;
+    auto screen_aspect_ratio = (f32)width / (f32)height;
     auto viewport_aspect_ratio = g_viewport.GetAspect();
 
-    if (1.0f <= screen_aspect_ratio) {
+    if (viewport_aspect_ratio < screen_aspect_ratio) {
         render_viewport.TopLeftY = 0;
         render_viewport.Height = height;
 
@@ -407,7 +423,15 @@ void ResizeDirectXViewport(int width, int height) {
 
     render_viewport.MinDepth = 0.0f;
     render_viewport.MaxDepth = 1.0f;
+    g_viewport.width_px = render_viewport.Width;
+    g_viewport.height_px = render_viewport.Height;
+
+    char buffer[128] = {};
+    sprintf(buffer, "Viewport resize event, x: %.2f, y: %.2f\n", g_viewport.width_px, g_viewport.height_px);
+    DebugMessage(buffer);
 }
+
+static bool g_isResizing = false;
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
@@ -436,15 +460,30 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             break;
         }
 
+        case WM_ENTERSIZEMOVE: {
+            g_isResizing = true;
+            DebugMessage((char*)"ENTER RESIZE\n");
+            break;
+        }
+
+        case WM_EXITSIZEMOVE: {
+            g_isResizing = false;
+            char buffer[128] = {};
+            sprintf(buffer, "Window resize event, x: %d, y: %d\n", g_main_window.width_px, g_main_window.height_px);
+            DebugMessage(buffer);
+            if (id3d11_device && swapChain) {
+                ResizeViewport(g_main_window.width_px, g_main_window.height_px);
+            }
+            DebugMessage((char*)"EXIT RESIZE\n");
+            break;
+        }
+
         case WM_SIZE: {
             if (wParam != SIZE_MINIMIZED) {
                 UINT width = LOWORD(lParam);
                 UINT height = HIWORD(lParam);
                 g_main_window.width_px = (i32)width;
                 g_main_window.height_px = (i32)height;
-                if (id3d11_device && swapChain) {
-                    ResizeDirectXViewport(g_main_window.width_px - 50, g_main_window.height_px - 50);
-                }
             }
             break;
         }
@@ -643,6 +682,65 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         }
     }
 
+    // --------------------------
+    // Create rectangle shader
+    {
+        HRESULT hr;
+        ID3DBlob* vsBlob = nullptr;
+        ID3DBlob* psBlob = nullptr;
+        ID3DBlob* error_blob = nullptr;
+
+        hr = D3DCompileFromFile(
+            L"G:\\projects\\game\\finite-engine-dev\\resources\\shaders\\rectangle.hlsl",
+            nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
+            "VSMain", "vs_5_0", 0, 0, &vsBlob, &error_blob);
+        CheckShaderCompileError(hr, error_blob);
+
+        hr = D3DCompileFromFile(
+            L"G:\\projects\\game\\finite-engine-dev\\resources\\shaders\\rectangle.hlsl",
+            nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
+            "PSMain", "ps_5_0", 0, 0, &psBlob, &error_blob);
+        CheckShaderCompileError(hr, error_blob);
+
+        hr = id3d11_device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &rectangle_vertex_shader);
+        if (FAILED(hr)) {
+            ErrorMessageAndBreak((char*)"CreateVertexShader failed!");
+        }
+
+        hr = id3d11_device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &rectangle_pixel_shader);
+        if (FAILED(hr)) {
+            ErrorMessageAndBreak((char*)"CreatePixelShader failed!");
+        }
+
+        D3D11_INPUT_ELEMENT_DESC layout[] = {
+            { "POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "COLOR", 0,    DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        };
+
+        hr = id3d11_device->CreateInputLayout(layout, ARRAYSIZE(layout), vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &rectangle_input_layout);
+        if (FAILED(hr)) {
+            ErrorMessageAndBreak((char*)"CreateInputLayout failed!");
+        }
+
+        vsBlob->Release();
+        psBlob->Release();
+
+        // -----------------------
+        // Create dynamic buffer
+        {
+            D3D11_BUFFER_DESC vertexBufferDesc = {};
+            vertexBufferDesc.Usage = D3D11_USAGE_DYNAMIC;
+            vertexBufferDesc.ByteWidth = sizeof(RectangleVertex) * MAX_TEXT_UI_VERTEX_COUNT;
+            vertexBufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+            vertexBufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+
+            hr = id3d11_device->CreateBuffer(&vertexBufferDesc, nullptr, &rectangle_vertex_buffer);
+            if (FAILED(hr)) {
+                ErrorMessageAndBreak((char*)"CreateBuffer for rectangle_vertex_buffer dynamic vertex buffer failed!");
+            }
+        }
+    }
+
     // -----------------------
     // Create font_ui shader
     {
@@ -711,13 +809,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         ID3DBlob* error_blob = nullptr;
 
         hr = D3DCompileFromFile(
-            L"G:\\projects\\game\\finite-engine-dev\\resources\\shaders\\shaders.hlsl",
+            L"G:\\projects\\game\\finite-engine-dev\\resources\\shaders\\tile.hlsl",
             nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
             "VSMain", "vs_5_0", 0, 0, &vsBlob, &error_blob);
         CheckShaderCompileError(hr, error_blob);
 
         hr = D3DCompileFromFile(
-            L"G:\\projects\\game\\finite-engine-dev\\resources\\shaders\\shaders.hlsl",
+            L"G:\\projects\\game\\finite-engine-dev\\resources\\shaders\\tile.hlsl",
             nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
             "PSMain", "ps_5_0", 0, 0, &psBlob, &error_blob);
         CheckShaderCompileError(hr, error_blob);
@@ -984,7 +1082,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         // Render viewport frame
         {
             deviceContext->ClearRenderTargetView(renderTargetView, clear_color);
-
             deviceContext->RSSetViewports(1, &render_viewport);
             deviceContext->OMSetRenderTargets(1, &renderTargetView, nullptr);
 
@@ -1019,6 +1116,40 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 deviceContext->VSSetConstantBuffers(0, 1, &cbuffer_view_projection);
             }
 
+            // -----------------
+            // Draw background
+            {
+                RectangleVertex vertices[] = {
+                    { DirectX::XMFLOAT4(-1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT4(0.0f, 0.0f, 0.0f, 1.0f) },  // Top-left
+                    { DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT4(0.0f, 0.0f, 0.0f, 1.0f) },   // Top-right
+                    { DirectX::XMFLOAT4(-1.0f, -1.0f, 1.0f, 1.0f), DirectX::XMFLOAT4(0.0f, 0.0f, 0.0f, 1.0f) }, // Bottom-left
+
+                    { DirectX::XMFLOAT4(-1.0f, -1.0f, 1.0f, 1.0f), DirectX::XMFLOAT4(0.0f, 0.0f, 0.0f, 1.0f) }, // Bottom-left
+                    { DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT4(0.0f, 0.0f, 0.0f, 1.0f) },   // Top-right
+                    { DirectX::XMFLOAT4(1.0f, -1.0f, 1.0f, 1.0f), DirectX::XMFLOAT4(0.0f, 0.0f, 0.0f, 1.0f) }   // Bottom-right
+                };
+
+                D3D11_MAPPED_SUBRESOURCE mappedResource;
+                HRESULT hr = deviceContext->Map(rectangle_vertex_buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
+                if (FAILED(hr)) {
+                    ErrorMessageAndBreak((char*)"Map for rectangle dynamic vertex buffer failed!");
+                }
+
+                memcpy(mappedResource.pData, vertices, sizeof(RectangleVertex) * 6);
+                deviceContext->Unmap(rectangle_vertex_buffer, 0);
+
+                deviceContext->IASetInputLayout(rectangle_input_layout);
+                deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+                deviceContext->VSSetShader(rectangle_vertex_shader, nullptr, 0);
+                deviceContext->PSSetShader(rectangle_pixel_shader, nullptr, 0);
+
+                UINT stride = sizeof(RectangleVertex);
+                UINT offset = 0;
+                deviceContext->IASetVertexBuffers(0, 1, &rectangle_vertex_buffer, &stride, &offset);
+                deviceContext->Draw(6, 0);
+            }
+
             // ---------------
             // Draw tilemaps
             {
@@ -1035,20 +1166,28 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 }
             }
 
+
             // Font test
             {
-                char c = 'k';
+                char c = 'f';
+                int x = 10;
+                int y = 10;
 
                 FontGlyphInfo glyph = g_debug_font.glyphs[c - 32];
 
-                TextUiVertex vertices[] = {
-                    { DirectX::XMFLOAT4(-0.25f, 0.25f, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x0, glyph.uv_y0) },  // Top-left
-                    { DirectX::XMFLOAT4(0.25f, 0.25f, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x1, glyph.uv_y0) },   // Top-right
-                    { DirectX::XMFLOAT4(-0.25f, -0.25f, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x0, glyph.uv_y1) }, // Bottom-left
+                auto top_left = ScreenPxToNDC(x, y);
+                auto top_right = ScreenPxToNDC(x + glyph.bitmap_width, y);
+                auto bot_left = ScreenPxToNDC(x, y + glyph.bitmap_height);
+                auto bot_right = ScreenPxToNDC(x + glyph.bitmap_width, y + glyph.bitmap_height);
 
-                    { DirectX::XMFLOAT4(-0.25f, -0.25f, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x0, glyph.uv_y1) }, // Bottom-left
-                    { DirectX::XMFLOAT4(0.25f, 0.25f, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x1, glyph.uv_y0) },   // Top-right
-                    { DirectX::XMFLOAT4(0.25f, -0.25f, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x1, glyph.uv_y1) }   // Bottom-right
+                TextUiVertex vertices[] = {
+                    { DirectX::XMFLOAT4(top_left.x, top_left.y, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x0, glyph.uv_y0) },  // Top-left
+                    { DirectX::XMFLOAT4(top_right.x, top_right.y, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x1, glyph.uv_y0) },   // Top-right
+                    { DirectX::XMFLOAT4(bot_left.x, bot_left.y, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x0, glyph.uv_y1) }, // Bottom-left
+
+                    { DirectX::XMFLOAT4(bot_left.x, bot_left.y, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x0, glyph.uv_y1) }, // Bottom-left
+                    { DirectX::XMFLOAT4(top_right.x, top_right.y, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x1, glyph.uv_y0) },   // Top-right
+                    { DirectX::XMFLOAT4(bot_right.x, bot_right.y, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x1, glyph.uv_y1) }   // Bottom-right
                 };
 
                 D3D11_MAPPED_SUBRESOURCE mappedResource;
@@ -1082,6 +1221,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
 
     return main_window_message.wParam;
+}
+
+Vec2 ScreenPxToNDC(int x, int y) {
+    f32 ndcX = (2.0f * x) / (g_viewport.width_px - 1) - 1.0f;
+    f32 ndcY = 1.0f - (2.0f * y) / (g_viewport.height_px - 1);
+
+    Vec2 result = {
+        .x = ndcX,
+        .y = ndcY
+    };
+    return result;
 }
 
 Vec2 TilemapCoordsToIsometricScreenSpace(Vec2 tilemap_coord) {
