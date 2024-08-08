@@ -47,16 +47,6 @@ struct Window {
     i32 height_px;
 };
 
-struct Viewport {
-    f32 aspect_width;
-    f32 aspect_height;
-    f32 width_px;
-    f32 height_px;
-    f32 GetAspect() {
-        return aspect_width / aspect_height;
-    }
-};
-
 struct FrameInput {
     bool mousewheel_up;
     bool mousewheel_down;
@@ -181,32 +171,10 @@ Vec2 ScreenPxToNDC(int x, int y);
 // ---------
 // Globals
 
-const DirectX::XMMATRIX isometric_transformation_matrix = DirectX::XMMatrixSet(
-    -0.5f, 0.5f, 0.0f, 0.0f,  // Row 1
-     0.5f, 0.5f, 0.0f, 0.0f,  // Row 2
-     0.0f, 0.0f, 1.0f, 0.0f,  // Row 3
-     0.0f, 0.0f, 0.0f, 1.0f   // Row 4
-);
-
-const DirectX::XMMATRIX inverse_isometric_transformation_matrix = DirectX::XMMatrixSet(
-    -1.0f, 1.0f, 0.0f, 0.0f,  // Row 1
-     1.0f, 1.0f, 0.0f, 0.0f,  // Row 2
-     0.0f, 0.0f, 1.0f, 0.0f,  // Row 3
-     0.0f, 0.0f, 0.0f, 1.0f   // Row 4
-);
-
 Window g_main_window = {
     .width_px = 1600,
     .height_px = 1200,
 };
-
-Viewport g_viewport = {
-    .aspect_width = 4.0f,
-    .aspect_height = 3.0f,
-    .width_px = (f32)g_main_window.width_px,
-    .height_px = (f32)g_main_window.height_px,
-};
-
 
 LARGE_INTEGER g_frequency;
 LARGE_INTEGER g_lastTime;
@@ -401,33 +369,15 @@ void ResizeViewport(int width, int height) {
     backBuffer->Release();
     deviceContext->OMSetRenderTargets(1, &renderTargetView, nullptr);
 
-    auto screen_aspect_ratio = (f32)width / (f32)height;
-    auto viewport_aspect_ratio = g_viewport.GetAspect();
-
-    if (viewport_aspect_ratio < screen_aspect_ratio) {
-        render_viewport.TopLeftY = 0;
-        render_viewport.Height = height;
-
-        f32 viewport_width = height * viewport_aspect_ratio;
-        render_viewport.TopLeftX = (width / 2) - (viewport_width / 2);
-        render_viewport.Width = viewport_width;
-    }
-    else {
-        render_viewport.TopLeftX = 0;
-        render_viewport.Width = width;
-
-        f32 viewport_height = width / viewport_aspect_ratio;
-        render_viewport.TopLeftY = (height / 2) - (viewport_height / 2);
-        render_viewport.Height = viewport_height;
-    }
-
+    render_viewport.TopLeftX = 0;
+    render_viewport.TopLeftY = 0;
+    render_viewport.Width = width;
+    render_viewport.Height = height;
     render_viewport.MinDepth = 0.0f;
     render_viewport.MaxDepth = 1.0f;
-    g_viewport.width_px = render_viewport.Width;
-    g_viewport.height_px = render_viewport.Height;
 
     char buffer[128] = {};
-    sprintf(buffer, "Viewport resize event, x: %.2f, y: %.2f\n", g_viewport.width_px, g_viewport.height_px);
+    sprintf(buffer, "Viewport resize event, x: %.2f, y: %.2f\n", width, height);
     DebugMessage(buffer);
 }
 
@@ -440,17 +390,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_COMMAND: {
-            break;
-        }
-
-        case WM_ERASEBKGND: {
-            HDC hdc = (HDC)wParam;
-            RECT rect;
-            GetClientRect(hwnd, &rect);
-            const COLORREF LIGHT_GREY = RGB(211, 211, 211);
-            HBRUSH hBrush = CreateSolidBrush(LIGHT_GREY);
-            FillRect(hdc, &rect, hBrush);
-            DeleteObject(hBrush);
             break;
         }
 
@@ -531,9 +470,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         if (main_window_handle == NULL) {
             ErrorMessageAndBreak((char*)"Window Creation Failed!");
         }
-
-        ShowWindow(main_window_handle, nCmdShow);
-        UpdateWindow(main_window_handle);
     }
 
     // ------------
@@ -664,7 +600,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
         // Update aspect projection matrix
         {
-            DirectX::XMMATRIX projectionMatrix = DirectX::XMMatrixOrthographicLH((float)g_viewport.aspect_width, (float)g_viewport.aspect_width, 0.0f, 10.0f);
+            DirectX::XMMATRIX projectionMatrix = DirectX::XMMatrixOrthographicLH((float)g_main_window.width_px, (float)g_main_window.height_px, 0.0f, 10.0f);
             AspectProjectionMatrixBufferType projection = {
                 .aspect_projection_matrix = DirectX::XMMatrixTranspose(projectionMatrix),
             };
@@ -848,13 +784,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         // Create tilemap shader buffer
         {
             TilemapTileVertex vertices[] = {
-                { DirectX::XMFLOAT3(-0.5f, 0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 0.0f) },  // Top-left
-                { DirectX::XMFLOAT3(0.5f, -0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 1.0f) },  // Bottom-right
-                { DirectX::XMFLOAT3(-0.5f, -0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 1.0f) }, // Bottom-left
+                { DirectX::XMFLOAT3(-1.0f, 0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 0.0f) },  // Top-left
+                { DirectX::XMFLOAT3(1.0f, -0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 1.0f) },  // Bottom-right
+                { DirectX::XMFLOAT3(-1.0f, -0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 1.0f) }, // Bottom-left
 
-                { DirectX::XMFLOAT3(-0.5f, 0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 0.0f) },  // Top-left
-                { DirectX::XMFLOAT3(0.5f, 0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 0.0f) },   // Top-right
-                { DirectX::XMFLOAT3(0.5f, -0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 1.0f) }   // Bottom-right
+                { DirectX::XMFLOAT3(-1.0f, 0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 0.0f) },  // Top-left
+                { DirectX::XMFLOAT3(1.0f, 0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 0.0f) },   // Top-right
+                { DirectX::XMFLOAT3(1.0f, -0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 1.0f) }   // Bottom-right
             };
 
             D3D11_BUFFER_DESC bufferDesc = {};
@@ -994,6 +930,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         g_font_texture->Release();
     }
 
+    ShowWindow(main_window_handle, nCmdShow);
+    UpdateWindow(main_window_handle);
+    ResizeViewport(g_main_window.width_px, g_main_window.height_px);
+
     // -----------
     // Game loop
     
@@ -1088,10 +1028,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             // --------------------------------
             // Update viewport camera cbuffer
             {
-                float viewWidth = viewport_camera.zoom / (4.0f/3.0f);
-                float viewHeight = viewport_camera.zoom;
                 float nearPlane = 0.0f;
                 float farPlane = 10.0f;
+                f32 aspect_ratio = (f32)g_main_window.width_px / (f32)g_main_window.height_px;
+                float viewWidth = 2.0f * viewport_camera.zoom;
+                float viewHeight = viewWidth / aspect_ratio;
+
+                char buffer[255] = {};
+                sprintf(buffer, "Aspect ratio: %.2f, Width: %.2f, Height: %.2f\n", aspect_ratio, viewWidth, viewHeight);
+                DebugMessage(buffer);
 
                 DirectX::XMMATRIX translationMatrix = DirectX::XMMatrixTranslation(viewport_camera.position.x, viewport_camera.position.y, 0.0f);
                 DirectX::XMMATRIX viewMatrix = DirectX::XMMatrixIdentity();
@@ -1224,9 +1169,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 }
 
 Vec2 ScreenPxToNDC(int x, int y) {
-    f32 ndcX = (2.0f * x) / (g_viewport.width_px - 1) - 1.0f;
-    f32 ndcY = 1.0f - (2.0f * y) / (g_viewport.height_px - 1);
-
+    f32 ndcX = (2.0f * x) / (g_main_window.width_px - 1) - 1.0f;
+    f32 ndcY = 1.0f - (2.0f * y) / (g_main_window.height_px - 1);
     Vec2 result = {
         .x = ndcX,
         .y = ndcY
@@ -1235,11 +1179,9 @@ Vec2 ScreenPxToNDC(int x, int y) {
 }
 
 Vec2 TilemapCoordsToIsometricScreenSpace(Vec2 tilemap_coord) {
-    DirectX::XMFLOAT4 float4;
-    auto vec4 = DirectX::XMVectorSet(tilemap_coord.x, tilemap_coord.y, 1.0f, 1.0f);
-    auto transformedVec = DirectX::XMVector4Transform(vec4, isometric_transformation_matrix);
-    XMStoreFloat4(&float4, transformedVec);
-    Vec2 result = {float4.x, float4.y};
+    float x = (tilemap_coord.x * (-1.0f)) + (tilemap_coord.y * (1.0f));
+    float y = (tilemap_coord.x * (0.5f)) + (tilemap_coord.y * (0.5f));
+    Vec2 result = {x, y};
     return result;
 }
 
