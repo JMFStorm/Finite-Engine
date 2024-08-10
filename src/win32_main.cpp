@@ -48,6 +48,10 @@ struct Window {
 };
 
 struct FrameInput {
+    f32 mouse_x;
+    f32 mouse_y;
+    i32 mouse_tilemap_x;
+    i32 mouse_tilemap_y;
     bool mousewheel_up;
     bool mousewheel_down;
     bool arrow_up;
@@ -58,7 +62,7 @@ struct FrameInput {
 
 struct Camera2D {
     DirectX::XMFLOAT2 position;
-    f32 zoom; // how many tiles can see vertically
+    f32 zoom;
 };
 
 struct ViewProjectionMatrixBufferType {
@@ -171,6 +175,8 @@ Vec2 ScreenPxToNDC(int x, int y);
 
 Vec2 DrawTextToScreen(char* text, Vec2 screen_pos, FontAtlasInfo* font_info);
 
+f32 GetTextWidthPx(char* text, FontAtlasInfo* font_info);
+
 FontAtlasInfo LoadFontAtlas(char* filepath, float pixel_height);
 
 f32 GetVWInPx(f32 vw);
@@ -179,11 +185,25 @@ f32 GetVHInPx(f32 vh);
 
 void LoadGlobalFonts();
 
+void WindowResizeEvent();
+
+Vec2 GetMousePositionInWindow();
+
+DirectX::XMMATRIX GetViewportProjectionMatrix();
+
+DirectX::XMMATRIX GetViewportViewMatrix();
+
+Vec2 ScreenSpaceToTilemapCoords(Vec2 tilemap_coord);
+
 // ---------
 // Globals
 
+const f32 debug_font_vh_size = 1.5f;
 FontAtlasInfo g_debug_font;
 
+bool g_isResizing = false;
+DWORD g_OriginalStyle;
+RECT g_OriginalRect;
 Window g_main_window = {};
 Window g_new_window_size = {};
 
@@ -245,7 +265,7 @@ Camera2D viewport_camera = {
 // Function implementations
 
 void LoadGlobalFonts() {
-    float debug_font_size = GetVHInPx(1.5f);
+    float debug_font_size = GetVHInPx(debug_font_vh_size);
     g_debug_font = LoadFontAtlas((char*)"G:\\projects\\game\\finite-engine-dev\\resources\\fonts\\Roboto-Light.ttf", debug_font_size);
 }
 
@@ -396,15 +416,47 @@ void ResizeViewport(int width, int height) {
     DebugMessage(buffer);
 }
 
-static bool g_isResizing = false;
+void WindowResizeEvent() {
+    ResizeViewport(g_main_window.width_px, g_main_window.height_px);
+    LoadGlobalFonts();
+}
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_CREATE: {
+            g_OriginalStyle = GetWindowLong(hwnd, GWL_STYLE);
+            GetWindowRect(hwnd, &g_OriginalRect);
             break;
         }
 
-        case WM_COMMAND: {
+        case WM_COMMAND: 
+            break;
+
+        case WM_KEYDOWN: {
+            if (wParam == VK_F11) {
+                DWORD style = GetWindowLong(hwnd, GWL_STYLE);
+                if (style & WS_POPUP) {
+                    // Restore original style and position
+                    SetWindowLong(hwnd, GWL_STYLE, g_OriginalStyle);
+                    SetWindowPos(hwnd, HWND_TOP, g_OriginalRect.left, g_OriginalRect.top, 
+                                 g_OriginalRect.right - g_OriginalRect.left, 
+                                 g_OriginalRect.bottom - g_OriginalRect.top,
+                                 SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+                    g_main_window.width_px = g_OriginalRect.right - g_OriginalRect.left;
+                    g_main_window.height_px = g_OriginalRect.bottom - g_OriginalRect.top;
+                }
+                else {
+                    // Set to fullscreen
+                    SetWindowLong(hwnd, GWL_STYLE, WS_POPUP);
+                    SetWindowPos(hwnd, HWND_TOP, 0, 0, GetSystemMetrics(SM_CXSCREEN), 
+                                 GetSystemMetrics(SM_CYSCREEN), 
+                                 SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+                    g_main_window.width_px =  GetSystemMetrics(SM_CXSCREEN);
+                    g_main_window.height_px = GetSystemMetrics(SM_CYSCREEN);
+                }
+
+                WindowResizeEvent();
+            }
             break;
         }
 
@@ -425,8 +477,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 if (g_main_window.width_px != g_new_window_size.width_px || g_main_window.height_px != g_new_window_size.height_px) {
                     g_main_window.width_px = g_new_window_size.width_px;
                     g_main_window.height_px = g_new_window_size.height_px;
-                    ResizeViewport(g_main_window.width_px, g_main_window.height_px);
-                    LoadGlobalFonts();
+                    WindowResizeEvent();
                 }
             }
             break;
@@ -490,7 +541,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             yPos = 0;
         }
         else {
-            style = WS_OVERLAPPEDWINDOW;
+            style = WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX;
             exStyle = WS_EX_APPWINDOW | WS_EX_WINDOWEDGE;
 
             g_main_window.width_px = 1200;
@@ -874,6 +925,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 DispatchMessageW(&main_window_message);
             }
 
+            
+            Vec2 mouse_pos = GetMousePositionInWindow();
+            frame_input.mouse_x = mouse_pos.x;
+            frame_input.mouse_y = mouse_pos.y;
+
             if (IsWindowFocused(main_window_handle)) {
                 if (mousewheel_delta > 0) {
                     frame_input.mousewheel_up = true;
@@ -934,16 +990,37 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             }
 
             if (frame_input.arrow_down) {
-                viewport_camera.position.y += 10.0f * frame_delta;
-            }
-            if (frame_input.arrow_up) {
                 viewport_camera.position.y -= 10.0f * frame_delta;
             }
+            if (frame_input.arrow_up) {
+                viewport_camera.position.y += 10.0f * frame_delta;
+            }
             if (frame_input.arrow_left) {
-                viewport_camera.position.x += 10.0f * frame_delta;
+                viewport_camera.position.x -= 10.0f * frame_delta;
             }
             if (frame_input.arrow_right) {
-                viewport_camera.position.x -= 10.0f * frame_delta;
+                viewport_camera.position.x += 10.0f * frame_delta;
+            }
+
+            // ----------------------------
+            // Get mouse in tilemap coords
+            {
+                DirectX::XMMATRIX viewMatrix = GetViewportViewMatrix();
+                DirectX::XMMATRIX projection = GetViewportProjectionMatrix();
+                DirectX::XMMATRIX viewProjInverse = XMMatrixInverse(nullptr, XMMatrixMultiply(viewMatrix, projection));
+
+                float normalizedX = (2.0f * frame_input.mouse_x) / g_new_window_size.width_px - 1.0f;
+                float normalizedY = 1.0f - (2.0f * frame_input.mouse_y) / g_new_window_size.height_px;
+
+                DirectX::XMVECTOR mouseNDC = DirectX::XMVectorSet(normalizedX, normalizedY, 1.0f, 1.0f);
+                DirectX::XMVECTOR worldPosition = XMVector3TransformCoord(mouseNDC, viewProjInverse);
+
+                f32 mx = DirectX::XMVectorGetX(worldPosition);
+                f32 my = DirectX::XMVectorGetY(worldPosition);
+
+                Vec2 tileCoord = ScreenSpaceToTilemapCoords(Vec2{mx, my});
+                frame_input.mouse_tilemap_x = (int)tileCoord.x + 1;
+                frame_input.mouse_tilemap_y = (int)tileCoord.y + 1;
             }
         }
 
@@ -957,17 +1034,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             // --------------------------------
             // Update viewport camera cbuffer
             {
-                float nearPlane = 0.0f;
-                float farPlane = 10.0f;
-                f32 aspect_ratio = (f32)g_main_window.width_px / (f32)g_main_window.height_px;
-                float viewWidth = 2.0f * viewport_camera.zoom;
-                float viewHeight = viewWidth / aspect_ratio;
-
-                DirectX::XMMATRIX translationMatrix = DirectX::XMMatrixTranslation(viewport_camera.position.x, viewport_camera.position.y, 0.0f);
-                DirectX::XMMATRIX viewMatrix = DirectX::XMMatrixIdentity();
-                viewMatrix = XMMatrixMultiply(viewMatrix, translationMatrix);
-
-                DirectX::XMMATRIX projectionMatrix = DirectX::XMMatrixOrthographicLH(viewWidth, viewHeight, nearPlane, farPlane);
+                DirectX::XMMATRIX viewMatrix = GetViewportViewMatrix();
+                DirectX::XMMATRIX projectionMatrix = GetViewportProjectionMatrix();
                 DirectX::XMMATRIX view_projection_matrix = DirectX::XMMatrixMultiply(viewMatrix, projectionMatrix);
 
                 ViewProjectionMatrixBufferType viewProjection = {
@@ -1024,8 +1092,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             // Draw tilemaps
             {
                 Tilemap map {
-                    .width = 8,
-                    .height = 7,
+                    .width = 5,
+                    .height = 5,
                 };
 
                 for (int y = 0; y < map.height; y++) {
@@ -1036,9 +1104,31 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 }
             }
 
-            const char* text01 = "Janne\nnew line vali lyonti testi.\n!kakaka jajaja";
-            Vec2 cursor01 = { 50.0f, 50.0f };
-            DrawTextToScreen((char*)text01, cursor01, &g_debug_font);
+            // ---------------
+            // Display debug
+            {
+                char debug_buffer[256] = {};
+                sprintf(debug_buffer, "Frames: %llu\n", frame_counter);
+                Vec2 cursor01 = { 5.0f, GetVHInPx(debug_font_vh_size) };
+                cursor01 = DrawTextToScreen((char*)debug_buffer, cursor01, &g_debug_font);
+                memset(debug_buffer, 0, sizeof(debug_buffer));
+
+                sprintf(debug_buffer, "Window width: %d, Window height: %d\n", (int)g_main_window.width_px, (int)g_main_window.height_px);
+                cursor01 = DrawTextToScreen((char*)debug_buffer, cursor01, &g_debug_font);
+                memset(debug_buffer, 0, sizeof(debug_buffer));
+
+                sprintf(debug_buffer, "Mouse x: %d, Mouse y: %d\n", (int)frame_input.mouse_x, (int)frame_input.mouse_y);
+                cursor01 = DrawTextToScreen((char*)debug_buffer, cursor01, &g_debug_font);
+                memset(debug_buffer, 0, sizeof(debug_buffer));
+
+                sprintf(debug_buffer, "Mouse tilemap x: %d, Mouse tilemap y: %d\n", frame_input.mouse_tilemap_x, frame_input.mouse_tilemap_y);
+                cursor01 = DrawTextToScreen((char*)debug_buffer, cursor01, &g_debug_font);
+                memset(debug_buffer, 0, sizeof(debug_buffer));
+
+                sprintf(debug_buffer, "Camera x: %.1f, Camera y: %.1f, Camera zoom: %.2f\n", viewport_camera.position.x, viewport_camera.position.y, viewport_camera.zoom);
+                cursor01 = DrawTextToScreen((char*)debug_buffer, cursor01, &g_debug_font);
+                memset(debug_buffer, 0, sizeof(debug_buffer));
+            }
 
             swapChain->Present(1, 0);
         }
@@ -1175,6 +1265,50 @@ FontAtlasInfo LoadFontAtlas(char* filepath, float pixel_height) {
     return result;
 }
 
+DirectX::XMMATRIX GetViewportViewMatrix() {
+    // Give camera position in negative values for translation to keep logical data for game
+    DirectX::XMMATRIX translationMatrix = DirectX::XMMatrixTranslation(-viewport_camera.position.x, -viewport_camera.position.y, 0.0f);
+    DirectX::XMMATRIX viewMatrix = DirectX::XMMatrixIdentity();
+    viewMatrix = XMMatrixMultiply(viewMatrix, translationMatrix);
+    return viewMatrix;
+}
+
+DirectX::XMMATRIX GetViewportProjectionMatrix() {
+    float nearPlane = 0.0f;
+    float farPlane = 10.0f;
+    f32 aspect_ratio = (f32)g_main_window.width_px / (f32)g_main_window.height_px;
+    float viewWidth = 2.0f * viewport_camera.zoom;
+    float viewHeight = viewWidth / aspect_ratio;
+
+    DirectX::XMMATRIX projectionMatrix = DirectX::XMMatrixOrthographicLH(viewWidth, viewHeight, nearPlane, farPlane);
+    return projectionMatrix;
+}
+
+f32 GetTextWidthPx(char* text, FontAtlasInfo* font_info) {
+    f32 longest = 0.0f;
+    f32 width = 0.0f;
+
+    for (char* p = (char*)text; *p != '\0'; p++) {
+        char c = *p;
+
+        if (c == '\n') {
+            if (longest < width) {
+                longest = width;
+                width = 0.0f;
+            }
+        }
+
+        FontGlyphInfo glyph = font_info->glyphs[c - 32];
+        width += glyph.advance;
+    }
+
+    if (longest < width) {
+        longest = width;
+    }
+
+    return longest;
+}
+
 Vec2 DrawTextToScreen(char* text, Vec2 screen_pos, FontAtlasInfo* font_info) {
     Vec2 cursor = {
         .x = screen_pos.x,
@@ -1254,11 +1388,26 @@ Vec2 ScreenPxToNDC(int x, int y) {
     return result;
 }
 
+Vec2 ScreenSpaceToTilemapCoords(Vec2 screen_coord) {
+    float y_tile = (screen_coord.x + 2.0f * screen_coord.y) / 2.0f;
+    float x_tile = (2.0f * screen_coord.y - screen_coord.x) / 2.0f;
+    Vec2 result = {x_tile, y_tile};
+    return result;
+}
+
 Vec2 TilemapCoordsToIsometricScreenSpace(Vec2 tilemap_coord) {
     float x = (tilemap_coord.x * (-1.0f)) + (tilemap_coord.y * (1.0f));
     float y = (tilemap_coord.x * (0.5f)) + (tilemap_coord.y * (0.5f));
     Vec2 result = {x, y};
     return result;
+}
+
+Vec2 GetMousePositionInWindow() {
+    POINT mousePos;
+    if (GetCursorPos(&mousePos) && ScreenToClient(main_window_handle, &mousePos)) {
+        return Vec2{(f32)mousePos.x, (f32)mousePos.y};
+    }
+    return Vec2{-1.0f, -1.0f};
 }
 
 void DrawTilemapTile(Texture* texture, Vec2 coordinate) {
