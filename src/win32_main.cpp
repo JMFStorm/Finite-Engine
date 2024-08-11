@@ -5,7 +5,7 @@
 #include <commdlg.h>
 #include <limits.h>
 
-# include <combaseapi.h>
+#include <combaseapi.h>
 #include <xaudio2.h>
 #include <d3d11_1.h>
 #include <d3dcompiler.h>
@@ -1117,7 +1117,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             {
                 DirectX::XMMATRIX viewMatrix = GetViewportViewMatrix();
                 DirectX::XMMATRIX projection = GetViewportProjectionMatrix();
-                DirectX::XMMATRIX viewProjInverse = XMMatrixInverse(nullptr, XMMatrixMultiply(viewMatrix, projection));
+                DirectX::XMMATRIX viewProjInverse = DirectX::XMMatrixInverse(nullptr, XMMatrixMultiply(viewMatrix, projection));
 
                 float normalizedX = (2.0f * frame_input.mouse_x) / g_new_window_size.width_px - 1.0f;
                 float normalizedY = 1.0f - (2.0f * frame_input.mouse_y) / g_new_window_size.height_px;
@@ -1133,6 +1133,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 frame_input.mouse_tilemap_y = (int)tileCoord.y + 1;
             }
         }
+
         if (frame_input.keys.a.pressed) {
             PlayMonoSound(sound_buffer_1);
         }
