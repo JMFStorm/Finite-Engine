@@ -101,7 +101,12 @@ struct ModelBufferType {
     DirectX::XMMATRIX modelMatrix;
 };
 
-struct Vec2 {
+struct Vec2i {
+    i32 x;
+    i32 y;
+};
+
+struct Vec2f {
     f32 x;
     f32 y;
 };
@@ -135,16 +140,6 @@ struct RectangleVertex {
     DirectX::XMFLOAT4 color;
 };
 
-struct TilemapTile {
-    Texture* texture;
-};
-
-struct Tilemap {
-    i32 width;
-    i32 height;
-    TilemapTile* tiles;
-};
-
 struct FontGlyphInfo {
     i32 bitmap_width;
     i32 bitmap_height;
@@ -159,7 +154,7 @@ struct FontGlyphInfo {
 };
 
 struct FontAtlasInfo {
-    ID3D11ShaderResourceView* texture_view = nullptr;
+    ID3D11ShaderResourceView* texture = nullptr;
     i32 font_size_px;
     f32 font_ascent;
     f32 font_descent;
@@ -205,17 +200,17 @@ bool IsKeyPressed(int key);
 
 bool IsWindowFocused(HWND window_handle);
 
-void DrawTilemapTile(Texture* texture, Vec2 coordinate);
+void DrawTilemapTile(ID3D11ShaderResourceView* texture, Vec2f coordinate);
 
 void StrToWideStr(char* str, wchar_t* wresult, int str_count);
 
-Vec2 TilemapCoordsToIsometricScreenSpace(Vec2 tilemap_coord);
+Vec2f TilemapCoordsToIsometricScreenSpace(Vec2f tilemap_coord);
 
 unsigned char* LoadFileToPtr(wchar_t* filename, size_t* get_file_size);
 
-Vec2 ScreenPxToNDC(int x, int y);
+Vec2f ScreenPxToNDC(int x, int y);
 
-Vec2 DrawTextToScreen(char* text, Vec2 screen_pos, FontAtlasInfo* font_info);
+Vec2f DrawTextToScreen(char* text, Vec2f screen_pos, FontAtlasInfo* font_info);
 
 f32 GetTextWidthPx(char* text, FontAtlasInfo* font_info);
 
@@ -229,13 +224,13 @@ void LoadGlobalFonts();
 
 void WindowResizeEvent();
 
-Vec2 GetMousePositionInWindow();
+Vec2f GetMousePositionInWindow();
 
 DirectX::XMMATRIX GetViewportProjectionMatrix();
 
 DirectX::XMMATRIX GetViewportViewMatrix();
 
-Vec2 ScreenSpaceToTilemapCoords(Vec2 tilemap_coord);
+Vec2f ScreenSpaceToTilemapCoords(Vec2f tilemap_coord);
 
 BYTE* LoadWAWFile(wchar_t* filePath, WAVHeader* wavHeader);
 
@@ -265,7 +260,7 @@ Window g_new_window_size = {};
 LARGE_INTEGER g_frequency;
 LARGE_INTEGER g_lastTime;
 
-Vec2 viewport_mouse = {};
+Vec2f viewport_mouse = {};
 
 u64 frame_counter = 0;
 f32 frame_delta = 0.0f;
@@ -1031,7 +1026,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 DispatchMessageW(&main_window_message);
             }
 
-            Vec2 mouse_pos = GetMousePositionInWindow();
+            Vec2f mouse_pos = GetMousePositionInWindow();
             frame_input.mouse_x = mouse_pos.x;
             frame_input.mouse_y = mouse_pos.y;
 
@@ -1128,7 +1123,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 f32 mx = DirectX::XMVectorGetX(worldPosition);
                 f32 my = DirectX::XMVectorGetY(worldPosition);
 
-                Vec2 tileCoord = ScreenSpaceToTilemapCoords(Vec2{mx, my});
+                Vec2f tileCoord = ScreenSpaceToTilemapCoords(Vec2f{mx, my});
                 frame_input.mouse_tilemap_x = (int)tileCoord.x + 1;
                 frame_input.mouse_tilemap_y = (int)tileCoord.y + 1;
             }
@@ -1211,15 +1206,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             // ---------------
             // Draw tilemaps
             {
-                Tilemap map {
-                    .width = 5,
-                    .height = 5,
-                };
+                int map_width = 8;
+                int map_height = 8;
 
-                for (int y = 0; y < map.height; y++) {
-                    for (int x = 0; x < map.width; x++) {
-                        Vec2 coordinate = {(f32)x, f32(y)};
-                        DrawTilemapTile(&test_texture_01, coordinate);
+                for (int y = 0; y < map_height; y++) {
+                    for (int x = 0; x < map_width; x++) {
+                        Vec2f coordinate = {(f32)x, f32(y)};
+                        DrawTilemapTile(test_texture_01.resource_view, coordinate);
                     }
                 }
             }
@@ -1229,7 +1222,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             {
                 char debug_buffer[256] = {};
                 sprintf(debug_buffer, "Frames: %llu\n", frame_counter);
-                Vec2 cursor01 = { 5.0f, GetVHInPx(debug_font_vh_size) };
+                Vec2f cursor01 = { 5.0f, GetVHInPx(debug_font_vh_size) };
                 cursor01 = DrawTextToScreen((char*)debug_buffer, cursor01, &g_debug_font);
                 memset(debug_buffer, 0, sizeof(debug_buffer));
 
@@ -1371,7 +1364,7 @@ FontAtlasInfo LoadFontAtlas(char* filepath, float pixel_height) {
     srvDesc.Texture2D.MostDetailedMip = 0;
     srvDesc.Texture2D.MipLevels = 1;
 
-    hr = id3d11_device->CreateShaderResourceView(g_font_texture, &srvDesc, &result.texture_view);
+    hr = id3d11_device->CreateShaderResourceView(g_font_texture, &srvDesc, &result.texture);
     if (FAILED(hr)) {
         ErrorMessageAndBreak((char*)"CreateShaderResourceView font atlas failed!");
     }
@@ -1458,13 +1451,13 @@ f32 GetTextWidthPx(char* text, FontAtlasInfo* font_info) {
     return longest;
 }
 
-Vec2 DrawTextToScreen(char* text, Vec2 screen_pos, FontAtlasInfo* font_info) {
-    Vec2 cursor = {
+Vec2f DrawTextToScreen(char* text, Vec2f screen_pos, FontAtlasInfo* font_info) {
+    Vec2f cursor = {
         .x = screen_pos.x,
         .y = screen_pos.y
     };
 
-    Vec2 cursor_original = {
+    Vec2f cursor_original = {
         .x = screen_pos.x,
         .y = screen_pos.y
     };
@@ -1513,7 +1506,7 @@ Vec2 DrawTextToScreen(char* text, Vec2 screen_pos, FontAtlasInfo* font_info) {
         deviceContext->VSSetShader(text_ui_vertex_shader, nullptr, 0);
         deviceContext->PSSetShader(text_ui_pixel_shader, nullptr, 0);
 
-        deviceContext->PSSetShaderResources(0, 1, &font_info->texture_view);
+        deviceContext->PSSetShaderResources(0, 1, &font_info->texture);
         deviceContext->PSSetSamplers(0, 1, &g_sampler);
 
         UINT stride = sizeof(TextUiVertex);
@@ -1557,39 +1550,39 @@ BYTE* LoadWAWFile(wchar_t* filePath, WAVHeader* wavHeader) {
     return audioData;
 }
 
-Vec2 ScreenPxToNDC(int x, int y) {
+Vec2f ScreenPxToNDC(int x, int y) {
     f32 ndcX = (2.0f * x) / (g_main_window.width_px - 1) - 1.0f;
     f32 ndcY = 1.0f - (2.0f * y) / (g_main_window.height_px - 1);
-    Vec2 result = {
+    Vec2f result = {
         .x = ndcX,
         .y = ndcY
     };
     return result;
 }
 
-Vec2 ScreenSpaceToTilemapCoords(Vec2 screen_coord) {
+Vec2f ScreenSpaceToTilemapCoords(Vec2f screen_coord) {
     float y_tile = (screen_coord.x + 2.0f * screen_coord.y) / 2.0f;
     float x_tile = (2.0f * screen_coord.y - screen_coord.x) / 2.0f;
-    Vec2 result = {x_tile, y_tile};
+    Vec2f result = {x_tile, y_tile};
     return result;
 }
 
-Vec2 TilemapCoordsToIsometricScreenSpace(Vec2 tilemap_coord) {
+Vec2f TilemapCoordsToIsometricScreenSpace(Vec2f tilemap_coord) {
     float x = (tilemap_coord.x * (-1.0f)) + (tilemap_coord.y * (1.0f));
     float y = (tilemap_coord.x * (0.5f)) + (tilemap_coord.y * (0.5f));
-    Vec2 result = {x, y};
+    Vec2f result = {x, y};
     return result;
 }
 
-Vec2 GetMousePositionInWindow() {
+Vec2f GetMousePositionInWindow() {
     POINT mousePos;
     if (GetCursorPos(&mousePos) && ScreenToClient(main_window_handle, &mousePos)) {
-        return Vec2{(f32)mousePos.x, (f32)mousePos.y};
+        return Vec2f{(f32)mousePos.x, (f32)mousePos.y};
     }
-    return Vec2{-1.0f, -1.0f};
+    return Vec2f{-1.0f, -1.0f};
 }
 
-void DrawTilemapTile(Texture* texture, Vec2 coordinate) {
+void DrawTilemapTile(ID3D11ShaderResourceView* texture, Vec2f coordinate) {
     // Constant buffer part
     D3D11_MAPPED_SUBRESOURCE mappedResource = {};
     HRESULT hr = deviceContext->Map(cbuffer_model, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
@@ -1597,7 +1590,7 @@ void DrawTilemapTile(Texture* texture, Vec2 coordinate) {
         ErrorMessageAndBreak((char*)"deviceContext->Map() ModelBufferType failed!");
     }
 
-    Vec2 screen_coord = TilemapCoordsToIsometricScreenSpace(coordinate);
+    Vec2f screen_coord = TilemapCoordsToIsometricScreenSpace(coordinate);
     DirectX::XMMATRIX translation = DirectX::XMMatrixTranslation(screen_coord.x, screen_coord.y, 0.0f);
 
     auto model_matrix = DirectX::XMMatrixIdentity();
@@ -1619,7 +1612,7 @@ void DrawTilemapTile(Texture* texture, Vec2 coordinate) {
     deviceContext->VSSetShader(tilemap_tile_vertex_shader, nullptr, 0);
     deviceContext->PSSetShader(tilemap_tile_pixel_shader, nullptr, 0);
 
-    deviceContext->PSSetShaderResources(0, 1, &texture->resource_view);
+    deviceContext->PSSetShaderResources(0, 1, &texture);
     deviceContext->PSSetSamplers(0, 1, &g_sampler);
 
     UINT stride = sizeof(TilemapTileVertex);
