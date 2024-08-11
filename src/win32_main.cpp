@@ -23,6 +23,10 @@
 
 const int MAX_TEXT_UI_VERTEX_COUNT = 1000;
 
+typedef unsigned char byte;
+
+static_assert(sizeof(unsigned char) * CHAR_BIT == 8, "unsigned char is not 8 bits");
+
 typedef int i32;
 typedef long long i64;
 
@@ -44,9 +48,30 @@ static_assert(sizeof(double) * CHAR_BIT == 64, "double is not 64 bits");
 // ---------
 // Structs
 
+struct Buffer {
+    i32 size_bytes;
+    byte* data;
+};
+
 struct Window {
     i32 width_px;
     i32 height_px;
+};
+
+struct KeyInputState {
+    int keycode;
+    bool pressed;
+    bool is_down;
+};
+
+struct GameKeys {
+    KeyInputState arrow_up = { VK_UP };
+    KeyInputState arrow_down { VK_DOWN };
+    KeyInputState arrow_left = { VK_LEFT };
+    KeyInputState arrow_right = { VK_RIGHT };
+    KeyInputState a = { (int)'A' };
+    KeyInputState s = { (int)'S' };
+    KeyInputState d = { (int)'D' };
 };
 
 struct FrameInput {
@@ -56,10 +81,7 @@ struct FrameInput {
     i32 mouse_tilemap_y;
     bool mousewheel_up;
     bool mousewheel_down;
-    bool arrow_up;
-    bool arrow_down;
-    bool arrow_left;
-    bool arrow_right;
+    GameKeys keys = {};
 };
 
 struct Camera2D {
@@ -217,11 +239,17 @@ Vec2 ScreenSpaceToTilemapCoords(Vec2 tilemap_coord);
 
 BYTE* LoadWAWFile(wchar_t* filePath, WAVHeader* wavHeader);
 
+void PlayMonoSound(Buffer audio_buffer);
+
 // ---------
 // Globals
 
-bool isSoundPlaying = false;
-IXAudio2SourceVoice* pSourceVoice;
+Buffer sound_buffer_1 = {};
+Buffer sound_buffer_2 = {};
+Buffer sound_buffer_3 = {};
+
+const int MAX_VOICES = 20;
+IXAudio2SourceVoice* mono_source_voice_pool[MAX_VOICES] = { nullptr };
 IXAudio2* pXAudio2 = NULL;
 IXAudio2MasteringVoice* pMasterVoice = NULL;
 
@@ -949,24 +977,36 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         }
     }
 
-    WAVHeader test_sound = {};
-    BYTE* wav_audio_data = LoadWAWFile((LPWSTR)L"G:\\projects\\game\\finite-engine-dev\\resources\\sounds\\Africana_7.wav", &test_sound);
-
-    // --------------------
-    // Audio source voice
+    // -------------------------------
+    // Audio source voice (channels)
     {
+        WAVHeader wav_sound_header = {};
+        BYTE* wav_audio_data1 = LoadWAWFile((LPWSTR)L"G:\\projects\\game\\finite-engine-dev\\resources\\sounds\\Jump.wav", &wav_sound_header);
+        sound_buffer_1.data = wav_audio_data1;
+        sound_buffer_1.size_bytes = wav_sound_header.dataSize;
+
+        BYTE* wav_audio_data2 = LoadWAWFile((LPWSTR)L"G:\\projects\\game\\finite-engine-dev\\resources\\sounds\\Laser_Shoot.wav", &wav_sound_header);
+        sound_buffer_2.data = wav_audio_data2;
+        sound_buffer_2.size_bytes = wav_sound_header.dataSize;
+
+        BYTE* wav_audio_data3 = LoadWAWFile((LPWSTR)L"G:\\projects\\game\\finite-engine-dev\\resources\\sounds\\Pickup_Coin.wav", &wav_sound_header);
+        sound_buffer_3.data = wav_audio_data3;
+        sound_buffer_3.size_bytes = wav_sound_header.dataSize;
+
         WAVEFORMATEX wfx = { 0 };
-        wfx.wFormatTag = test_sound.audioFormat;
-        wfx.nChannels = test_sound.numChannels;
-        wfx.nSamplesPerSec = test_sound.sampleRate;
-        wfx.nAvgBytesPerSec = test_sound.byteRate;
-        wfx.nBlockAlign = test_sound.blockAlign;
-        wfx.wBitsPerSample = test_sound.bitsPerSample;
+        wfx.wFormatTag = wav_sound_header.audioFormat;
+        wfx.nChannels = wav_sound_header.numChannels;
+        wfx.nSamplesPerSec = wav_sound_header.sampleRate;
+        wfx.nAvgBytesPerSec = wav_sound_header.byteRate;
+        wfx.nBlockAlign = wav_sound_header.blockAlign;
+        wfx.wBitsPerSample = wav_sound_header.bitsPerSample;
         wfx.cbSize = 0;
 
-        HRESULT hr = pXAudio2->CreateSourceVoice(&pSourceVoice, &wfx);
-        if (FAILED(hr)) {
-            ErrorMessageAndBreak((char*)"Failed to create source voice.");
+        for (int i = 0; i < MAX_VOICES; ++i) {
+            HRESULT hr = pXAudio2->CreateSourceVoice(&mono_source_voice_pool[i], &wfx);
+            if (FAILED(hr)) {
+                ErrorMessageAndBreak((char*)"Failed to create source voice.");
+            }
         }
     }
 
@@ -980,25 +1020,43 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     // -----------
     // Game loop
-    
     while (main_window_message.message != WM_QUIT) {
         // --------------
         // Handle input
         {
             mousewheel_delta = 0;
-            frame_input = {0};
 
             if (PeekMessage(&main_window_message, NULL, 0, 0, PM_REMOVE)) {
                 TranslateMessage(&main_window_message);
                 DispatchMessageW(&main_window_message);
             }
 
-            
             Vec2 mouse_pos = GetMousePositionInWindow();
             frame_input.mouse_x = mouse_pos.x;
             frame_input.mouse_y = mouse_pos.y;
 
             if (IsWindowFocused(main_window_handle)) {
+                int keys_struct_size = sizeof(GameKeys);
+                int keys_size = sizeof(KeyInputState);
+                int keys_count = keys_struct_size / keys_size;
+
+                auto keys_ptr = (KeyInputState*)&frame_input.keys;
+
+                for (int i = 0; i < keys_count; i++) {
+                    KeyInputState* key = &keys_ptr[i];
+                    if (IsKeyPressed(key->keycode)) {
+                        key->pressed = key->is_down ? false : true;
+                        key->is_down = true;
+                    }
+                    else {
+                        key->is_down = false;
+                        key->pressed = false;
+                    }
+                }   
+
+                frame_input.mousewheel_up = false;
+                frame_input.mousewheel_down = false;
+
                 if (mousewheel_delta > 0) {
                     frame_input.mousewheel_up = true;
                 }   
@@ -1006,48 +1064,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                     frame_input.mousewheel_down = true;
                 }
 
-                if (IsKeyPressed(VK_LEFT)) {
-                    frame_input.arrow_left = true;
-                }
-
-                if (IsKeyPressed(VK_RIGHT)) {
-                    frame_input.arrow_right = true;
-                }
-
-                if (IsKeyPressed(VK_UP)) {
-                    frame_input.arrow_up = true;
-                }
-
-                if (IsKeyPressed(VK_DOWN)) {
-                    frame_input.arrow_down = true;
-                }
-
                 if (IsKeyPressed(VK_ESCAPE)) {
                     PostQuitMessage(0);
-                }
-
-                if (IsKeyPressed(VK_SPACE) && !isSoundPlaying) {
-                    XAUDIO2_BUFFER buffer = { 0 };
-                    buffer.AudioBytes = test_sound.dataSize;    // Size of the audio data in bytes
-                    buffer.pAudioData = wav_audio_data;         // Pointer to the audio data
-                    buffer.Flags = XAUDIO2_END_OF_STREAM;       // Tell the source voice that this is the end of the buffer
-
-                    HRESULT hr = pSourceVoice->SubmitSourceBuffer(&buffer);
-                    if (FAILED(hr)) {
-                        ErrorMessageAndBreak((char*)"Failed to submit source buffer.");
-                    }
-
-                    hr = pSourceVoice->Start(0);
-                    if (FAILED(hr)) {
-                        ErrorMessageAndBreak((char*)"Failed to start the source voice.");
-                    }
-                    isSoundPlaying = true;
-                }
-
-                XAUDIO2_VOICE_STATE state;
-                pSourceVoice->GetState(&state);
-                if (state.BuffersQueued == 0) {
-                    isSoundPlaying = false;
                 }
             }
         }
@@ -1081,16 +1099,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 }
             }
 
-            if (frame_input.arrow_down) {
+            if (frame_input.keys.arrow_down.is_down) {
                 viewport_camera.position.y -= 10.0f * frame_delta;
             }
-            if (frame_input.arrow_up) {
+            if (frame_input.keys.arrow_up.is_down) {
                 viewport_camera.position.y += 10.0f * frame_delta;
             }
-            if (frame_input.arrow_left) {
+            if (frame_input.keys.arrow_left.is_down) {
                 viewport_camera.position.x -= 10.0f * frame_delta;
             }
-            if (frame_input.arrow_right) {
+            if (frame_input.keys.arrow_right.is_down) {
                 viewport_camera.position.x += 10.0f * frame_delta;
             }
 
@@ -1114,6 +1132,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 frame_input.mouse_tilemap_x = (int)tileCoord.x + 1;
                 frame_input.mouse_tilemap_y = (int)tileCoord.y + 1;
             }
+        }
+        if (frame_input.keys.a.pressed) {
+            PlayMonoSound(sound_buffer_1);
+        }
+        if (frame_input.keys.s.pressed) {
+            PlayMonoSound(sound_buffer_2);
+        }
+        if (frame_input.keys.d.pressed) {
+            PlayMonoSound(sound_buffer_3);
         }
 
         // -----------------------
@@ -1376,6 +1403,35 @@ DirectX::XMMATRIX GetViewportProjectionMatrix() {
     return projectionMatrix;
 }
 
+void PlayMonoSound(Buffer audio_buffer) {
+    IXAudio2SourceVoice* pVoice = nullptr;
+    for (int i = 0; i < MAX_VOICES; ++i) {
+        XAUDIO2_VOICE_STATE state;
+        mono_source_voice_pool[i]->GetState(&state);
+        if (state.BuffersQueued == 0) {
+            pVoice = mono_source_voice_pool[i];
+            break;
+        }
+    }
+
+    XAUDIO2_BUFFER buffer = { 0 };
+    buffer.AudioBytes = audio_buffer.size_bytes;
+    buffer.pAudioData = audio_buffer.data;
+    buffer.Flags = XAUDIO2_END_OF_STREAM;
+
+    if (pVoice != nullptr) {
+        HRESULT hr = pVoice->SubmitSourceBuffer(&buffer);
+        if (FAILED(hr)) {
+            ErrorMessageAndBreak((char*)"Failed to submit source buffer.");
+        }
+
+        hr = pVoice->Start(0);
+        if (FAILED(hr)) {
+            ErrorMessageAndBreak((char*)"Failed to start the source voice.");
+        }
+    }
+}
+
 f32 GetTextWidthPx(char* text, FontAtlasInfo* font_info) {
     f32 longest = 0.0f;
     f32 width = 0.0f;
@@ -1482,8 +1538,6 @@ BYTE* LoadWAWFile(wchar_t* filePath, WAVHeader* wavHeader) {
     if (!ReadFile(hFile, wavHeader, sizeof(WAVHeader), &bytesRead, NULL)) {
         ErrorMessageAndBreak((char*)"Error reading file.\n");
     }
-
-
 
     if (memcmp(wavHeader->riffHeader, "RIFF", 4) != 0 || memcmp(wavHeader->waveHeader, "WAVE", 4) != 0) {
         ErrorMessageAndBreak((char*)"Invalid WAV file.");
