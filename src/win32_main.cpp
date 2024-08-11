@@ -5,6 +5,8 @@
 #include <commdlg.h>
 #include <limits.h>
 
+# include <combaseapi.h>
+#include <xaudio2.h>
 #include <d3d11_1.h>
 #include <d3dcompiler.h>
 #include <DirectXMath.h>
@@ -145,6 +147,24 @@ struct FontAtlasInfo {
     FontGlyphInfo glyphs[96] = {};
 };
 
+#pragma pack(1)
+typedef struct {
+    char riffHeader[4];        // "RIFF"
+    DWORD fileSize;            // Size of the entire file minus 8 bytes
+    char waveHeader[4];        // "WAVE"
+    char fmtHeader[4];         // "fmt "
+    DWORD fmtChunkSize;        // Size of the fmt chunk
+    WORD audioFormat;          // Audio format (1 for PCM)
+    WORD numChannels;          // Number of channels
+    DWORD sampleRate;          // Sampling frequency
+    DWORD byteRate;            // (Sample Rate * BitsPerSample * Channels) / 8
+    WORD blockAlign;           // Block align (Channels * BitsPerSample) / 8
+    WORD bitsPerSample;        // Bits per sample
+    char dataHeader[4];        // "data"
+    DWORD dataSize;            // Size of the data section
+} WAVHeader;
+#pragma pack()
+
 // -----------------------
 // Function declarations
 
@@ -195,8 +215,15 @@ DirectX::XMMATRIX GetViewportViewMatrix();
 
 Vec2 ScreenSpaceToTilemapCoords(Vec2 tilemap_coord);
 
+BYTE* LoadWAWFile(wchar_t* filePath, WAVHeader* wavHeader);
+
 // ---------
 // Globals
+
+bool isSoundPlaying = false;
+IXAudio2SourceVoice* pSourceVoice;
+IXAudio2* pXAudio2 = NULL;
+IXAudio2MasteringVoice* pMasterVoice = NULL;
 
 const f32 debug_font_vh_size = 1.5f;
 FontAtlasInfo g_debug_font;
@@ -565,6 +592,26 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         }
     }
 
+    // -------------
+    // Init XAudio
+    {
+        HRESULT hr;
+        hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        if (FAILED(hr)) {
+             ErrorMessageAndBreak((char*)"Failed to initialize CoInitializeEx.");
+        }
+
+        hr = XAudio2Create(&pXAudio2, 0, XAUDIO2_DEFAULT_PROCESSOR);
+        if (FAILED(hr)) {
+            ErrorMessageAndBreak((char*)"Failed to initialize XAudio2.");
+        }
+
+        hr = pXAudio2->CreateMasteringVoice(&pMasterVoice);
+        if (FAILED(hr)) {
+            ErrorMessageAndBreak((char*)"Failed to create mastering voice.");
+        }
+    }
+
     // ------------
     // Init timer
 
@@ -902,6 +949,27 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         }
     }
 
+    WAVHeader test_sound = {};
+    BYTE* wav_audio_data = LoadWAWFile((LPWSTR)L"G:\\projects\\game\\finite-engine-dev\\resources\\sounds\\Africana_7.wav", &test_sound);
+
+    // --------------------
+    // Audio source voice
+    {
+        WAVEFORMATEX wfx = { 0 };
+        wfx.wFormatTag = test_sound.audioFormat;
+        wfx.nChannels = test_sound.numChannels;
+        wfx.nSamplesPerSec = test_sound.sampleRate;
+        wfx.nAvgBytesPerSec = test_sound.byteRate;
+        wfx.nBlockAlign = test_sound.blockAlign;
+        wfx.wBitsPerSample = test_sound.bitsPerSample;
+        wfx.cbSize = 0;
+
+        HRESULT hr = pXAudio2->CreateSourceVoice(&pSourceVoice, &wfx);
+        if (FAILED(hr)) {
+            ErrorMessageAndBreak((char*)"Failed to create source voice.");
+        }
+    }
+
     LoadTextureFromFilepath(&test_texture_01, (char*)"G:\\projects\\game\\finite-engine-dev\\resources\\images\\tiles\\grassland_tile_01.png");
     
     ShowWindow(main_window_handle, nCmdShow);
@@ -956,6 +1024,30 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
                 if (IsKeyPressed(VK_ESCAPE)) {
                     PostQuitMessage(0);
+                }
+
+                if (IsKeyPressed(VK_SPACE) && !isSoundPlaying) {
+                    XAUDIO2_BUFFER buffer = { 0 };
+                    buffer.AudioBytes = test_sound.dataSize;    // Size of the audio data in bytes
+                    buffer.pAudioData = wav_audio_data;         // Pointer to the audio data
+                    buffer.Flags = XAUDIO2_END_OF_STREAM;       // Tell the source voice that this is the end of the buffer
+
+                    HRESULT hr = pSourceVoice->SubmitSourceBuffer(&buffer);
+                    if (FAILED(hr)) {
+                        ErrorMessageAndBreak((char*)"Failed to submit source buffer.");
+                    }
+
+                    hr = pSourceVoice->Start(0);
+                    if (FAILED(hr)) {
+                        ErrorMessageAndBreak((char*)"Failed to start the source voice.");
+                    }
+                    isSoundPlaying = true;
+                }
+
+                XAUDIO2_VOICE_STATE state;
+                pSourceVoice->GetState(&state);
+                if (state.BuffersQueued == 0) {
+                    isSoundPlaying = false;
                 }
             }
         }
@@ -1376,6 +1468,38 @@ Vec2 DrawTextToScreen(char* text, Vec2 screen_pos, FontAtlasInfo* font_info) {
     }
 
     return cursor;
+}
+
+BYTE* LoadWAWFile(wchar_t* filePath, WAVHeader* wavHeader) {
+    HANDLE hFile;
+    DWORD bytesRead;
+
+    hFile = CreateFileW(filePath, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        ErrorMessageAndBreak((char*)"Error opening file.");
+    }
+
+    if (!ReadFile(hFile, wavHeader, sizeof(WAVHeader), &bytesRead, NULL)) {
+        ErrorMessageAndBreak((char*)"Error reading file.\n");
+    }
+
+
+
+    if (memcmp(wavHeader->riffHeader, "RIFF", 4) != 0 || memcmp(wavHeader->waveHeader, "WAVE", 4) != 0) {
+        ErrorMessageAndBreak((char*)"Invalid WAV file.");
+    }
+
+    BYTE* audioData = (BYTE*)GlobalAlloc(GMEM_FIXED, wavHeader->dataSize);
+    if (audioData == NULL) {
+        ErrorMessageAndBreak((char*)"Memory allocation failed.");
+    }
+
+    if (!ReadFile(hFile, audioData, wavHeader->dataSize, &bytesRead, NULL)) {
+        ErrorMessageAndBreak((char*)"Error reading audio data.");
+    }
+
+    CloseHandle(hFile);
+    return audioData;
 }
 
 Vec2 ScreenPxToNDC(int x, int y) {
