@@ -330,6 +330,7 @@ ID3D11Buffer* rectangle_vertex_buffer = nullptr;
 ID3D11InputLayout* rectangle_input_layout = nullptr;
 
 ID3D11VertexShader* linedot_vertex_shader = nullptr;
+ID3D11GeometryShader* linedot_geometry_shader = nullptr;
 ID3D11PixelShader* linedot_pixel_shader = nullptr;
 ID3D11Buffer* linedot_vertex_buffer = nullptr;
 ID3D11InputLayout* linedot_input_layout = nullptr;
@@ -886,6 +887,22 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         vsBlob->Release();
         psBlob->Release();
 
+        // -----------------
+        // Geometry shader
+        {
+            ID3DBlob* gsBlob = nullptr;
+            hr = D3DCompileFromFile(
+                L"G:\\projects\\game\\finite-engine-dev\\resources\\shaders\\linedot.hlsl",
+                nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
+                "GS_PointExpand", "gs_5_0", 0, 0, &gsBlob, &error_blob);
+            CheckShaderCompileError(hr, error_blob);
+
+            hr = id3d11_device->CreateGeometryShader(gsBlob->GetBufferPointer(), gsBlob->GetBufferSize(), nullptr, &linedot_geometry_shader);
+            if (FAILED(hr)) {
+                ErrorMessageAndBreak((char*)"CreateGeometryShader failed!");
+            }
+        }
+
         // -----------------------
         // Create dynamic buffer
         {
@@ -1157,16 +1174,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             }
 
             if (frame_input.keys.arrow_down.is_down) {
-                viewport_camera.position.y -= 10.0f * frame_delta;
+                viewport_camera.position.y -= 5.0f * frame_delta;
             }
             if (frame_input.keys.arrow_up.is_down) {
-                viewport_camera.position.y += 10.0f * frame_delta;
+                viewport_camera.position.y += 5.0f * frame_delta;
             }
             if (frame_input.keys.arrow_left.is_down) {
-                viewport_camera.position.x -= 10.0f * frame_delta;
+                viewport_camera.position.x -= 5.0f * frame_delta;
             }
             if (frame_input.keys.arrow_right.is_down) {
-                viewport_camera.position.x += 10.0f * frame_delta;
+                viewport_camera.position.x += 5.0f * frame_delta;
             }
 
             // ----------------------------
@@ -1792,7 +1809,10 @@ void DrawDot(Vec2f ndc, Vec3f color) {
     UINT stride = sizeof(LineDotVertex);
     UINT offset = 0;
     deviceContext->IASetVertexBuffers(0, 1, &linedot_vertex_buffer, &stride, &offset);
+
+    deviceContext->GSSetShader(linedot_geometry_shader, nullptr, 0);
     deviceContext->Draw(1, 0);
+    deviceContext->GSSetShader(nullptr, nullptr, 0); 
 }
 
 void SetDefaultViewportDimensions() {
