@@ -152,6 +152,11 @@ struct RectangleVertex {
     DirectX::XMFLOAT4 color;
 };
 
+struct LineDotVertex {
+    DirectX::XMFLOAT4 position;
+    DirectX::XMFLOAT4 color;
+};
+
 struct FontGlyphInfo {
     i32 bitmap_width;
     i32 bitmap_height;
@@ -236,6 +241,8 @@ void LoadGlobalFonts();
 
 void WindowResizeEvent();
 
+void DrawDot(Vec2f ndc, Vec3f color);
+
 Vec2f GetMousePositionInWindow();
 
 void SetDefaultViewportDimensions();
@@ -307,20 +314,25 @@ ID3D11SamplerState* g_sampler;
 Texture test_texture_01 = {};
 FLOAT clear_color[] = { 1.0f, 0.0f, 1.0f, 1.0f };
 
-ID3D11VertexShader* tilemap_tile_vertex_shader;
-ID3D11PixelShader* tilemap_tile_pixel_shader;
-ID3D11Buffer* tilemap_tile_vertex_buffer;
-ID3D11InputLayout* tilemap_tile_input_layout;
+ID3D11VertexShader* tilemap_tile_vertex_shader = nullptr;
+ID3D11PixelShader* tilemap_tile_pixel_shader = nullptr;
+ID3D11Buffer* tilemap_tile_vertex_buffer = nullptr;
+ID3D11InputLayout* tilemap_tile_input_layout = nullptr;
 
-ID3D11VertexShader* text_ui_vertex_shader;
-ID3D11PixelShader* text_ui_pixel_shader;
-ID3D11Buffer* text_ui_vertex_buffer;
-ID3D11InputLayout* text_ui_input_layout;
+ID3D11VertexShader* text_ui_vertex_shader = nullptr;
+ID3D11PixelShader* text_ui_pixel_shader = nullptr;
+ID3D11Buffer* text_ui_vertex_buffer = nullptr;
+ID3D11InputLayout* text_ui_input_layout = nullptr;
 
-ID3D11VertexShader* rectangle_vertex_shader;
-ID3D11PixelShader* rectangle_pixel_shader;
-ID3D11Buffer* rectangle_vertex_buffer;
-ID3D11InputLayout* rectangle_input_layout;
+ID3D11VertexShader* rectangle_vertex_shader = nullptr;
+ID3D11PixelShader* rectangle_pixel_shader = nullptr;
+ID3D11Buffer* rectangle_vertex_buffer = nullptr;
+ID3D11InputLayout* rectangle_input_layout = nullptr;
+
+ID3D11VertexShader* linedot_vertex_shader = nullptr;
+ID3D11PixelShader* linedot_pixel_shader = nullptr;
+ID3D11Buffer* linedot_vertex_buffer = nullptr;
+ID3D11InputLayout* linedot_input_layout = nullptr;
 
 wchar_t open_filename_path[260] = {};
 OPENFILENAMEW open_filename_struct;
@@ -442,7 +454,6 @@ void CheckShaderCompileError(HRESULT hr, ID3DBlob* error_blob) {
     if (error_blob) {
         OutputDebugStringA((char*)error_blob->GetBufferPointer());
         ErrorMessageAndBreak((char*)error_blob->GetBufferPointer());
-        error_blob->Release();
     }
 
     ErrorMessageAndBreak((char*)"ERROR from: CheckDirecXError()");
@@ -832,61 +843,61 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         }
     }
 
-    // -----------------------
-    // Create font_ui shader
+    // --------------------------
+    // Create linedot shader
     {
         HRESULT hr;
+        ID3DBlob* vsBlob = nullptr;
+        ID3DBlob* psBlob = nullptr;
         ID3DBlob* error_blob = nullptr;
-        ID3DBlob* pVSBlob = nullptr;
-        ID3DBlob* pPSBlob = nullptr;
 
         hr = D3DCompileFromFile(
-            L"G:\\projects\\game\\finite-engine-dev\\resources\\shaders\\text_ui.hlsl",
-            nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, "VSMain", "vs_5_0", 0, 0, &pVSBlob, &error_blob);
+            L"G:\\projects\\game\\finite-engine-dev\\resources\\shaders\\linedot.hlsl",
+            nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
+            "VSMain", "vs_5_0", 0, 0, &vsBlob, &error_blob);
         CheckShaderCompileError(hr, error_blob);
 
         hr = D3DCompileFromFile(
-            L"G:\\projects\\game\\finite-engine-dev\\resources\\shaders\\text_ui.hlsl",
-            nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, "PSMain", "ps_5_0", 0, 0, &pPSBlob, &error_blob);
+            L"G:\\projects\\game\\finite-engine-dev\\resources\\shaders\\linedot.hlsl",
+            nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
+            "PSMain", "ps_5_0", 0, 0, &psBlob, &error_blob);
         CheckShaderCompileError(hr, error_blob);
 
-        hr = id3d11_device->CreateVertexShader(pVSBlob->GetBufferPointer(), pVSBlob->GetBufferSize(), nullptr, &text_ui_vertex_shader);
+        hr = id3d11_device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &linedot_vertex_shader);
         if (FAILED(hr)) {
-            ErrorMessageAndBreak((char*)"CreateVertexShader font_ui failed!");
+            ErrorMessageAndBreak((char*)"CreateVertexShader failed!");
         }
 
-        hr = id3d11_device->CreatePixelShader(pPSBlob->GetBufferPointer(), pPSBlob->GetBufferSize(), nullptr, &text_ui_pixel_shader);
+        hr = id3d11_device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &linedot_pixel_shader);
         if (FAILED(hr)) {
-            ErrorMessageAndBreak((char*)"CreatePixelShader font_ui failed!");
+            ErrorMessageAndBreak((char*)"CreatePixelShader failed!");
         }
 
-        // Define the input layout
         D3D11_INPUT_ELEMENT_DESC layout[] = {
             { "POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-            { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "COLOR", 0,    DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0 },
         };
 
-        // Create the input layout
-        hr = id3d11_device->CreateInputLayout(layout, ARRAYSIZE(layout), pVSBlob->GetBufferPointer(), pVSBlob->GetBufferSize(), &text_ui_input_layout);
+        hr = id3d11_device->CreateInputLayout(layout, ARRAYSIZE(layout), vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &linedot_input_layout);
         if (FAILED(hr)) {
-            ErrorMessageAndBreak((char*)"CreateInputLayout font_ui failed!");
+            ErrorMessageAndBreak((char*)"CreateInputLayout failed!");
         }
 
-        pVSBlob->Release();
-        pPSBlob->Release();
+        vsBlob->Release();
+        psBlob->Release();
 
         // -----------------------
-        // Create dynamix text_ui buffer
+        // Create dynamic buffer
         {
             D3D11_BUFFER_DESC vertexBufferDesc = {};
             vertexBufferDesc.Usage = D3D11_USAGE_DYNAMIC;
-            vertexBufferDesc.ByteWidth = sizeof(TextUiVertex) * MAX_TEXT_UI_VERTEX_COUNT;
+            vertexBufferDesc.ByteWidth = sizeof(LineDotVertex) * MAX_TEXT_UI_VERTEX_COUNT;
             vertexBufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
             vertexBufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 
-            hr = id3d11_device->CreateBuffer(&vertexBufferDesc, nullptr, &text_ui_vertex_buffer);
+            hr = id3d11_device->CreateBuffer(&vertexBufferDesc, nullptr, &linedot_vertex_buffer);
             if (FAILED(hr)) {
-                ErrorMessageAndBreak((char*)"CreateBuffer for text_ui dynamic vertex buffer failed!");
+                ErrorMessageAndBreak((char*)"CreateBuffer for linedot_vertex_buffer dynamic vertex buffer failed!");
             }
         }
     }
@@ -960,6 +971,65 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             hr = id3d11_device->CreateBuffer(&bufferDesc, &initData, &tilemap_tile_vertex_buffer);
             if (FAILED(hr)) {
                 ErrorMessageAndBreak((char*)"CreateBuffer (vertex) failed!");
+            }
+        }
+    }
+
+    // -----------------------
+    // Create font_ui shader
+    {
+        HRESULT hr;
+        ID3DBlob* error_blob = nullptr;
+        ID3DBlob* pVSBlob = nullptr;
+        ID3DBlob* pPSBlob = nullptr;
+
+        hr = D3DCompileFromFile(
+            L"G:\\projects\\game\\finite-engine-dev\\resources\\shaders\\text_ui.hlsl",
+            nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, "VSMain", "vs_5_0", 0, 0, &pVSBlob, &error_blob);
+        CheckShaderCompileError(hr, error_blob);
+
+        hr = D3DCompileFromFile(
+            L"G:\\projects\\game\\finite-engine-dev\\resources\\shaders\\text_ui.hlsl",
+            nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, "PSMain", "ps_5_0", 0, 0, &pPSBlob, &error_blob);
+        CheckShaderCompileError(hr, error_blob);
+
+        hr = id3d11_device->CreateVertexShader(pVSBlob->GetBufferPointer(), pVSBlob->GetBufferSize(), nullptr, &text_ui_vertex_shader);
+        if (FAILED(hr)) {
+            ErrorMessageAndBreak((char*)"CreateVertexShader font_ui failed!");
+        }
+
+        hr = id3d11_device->CreatePixelShader(pPSBlob->GetBufferPointer(), pPSBlob->GetBufferSize(), nullptr, &text_ui_pixel_shader);
+        if (FAILED(hr)) {
+            ErrorMessageAndBreak((char*)"CreatePixelShader font_ui failed!");
+        }
+
+        // Define the input layout
+        D3D11_INPUT_ELEMENT_DESC layout[] = {
+            { "POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        };
+
+        // Create the input layout
+        hr = id3d11_device->CreateInputLayout(layout, ARRAYSIZE(layout), pVSBlob->GetBufferPointer(), pVSBlob->GetBufferSize(), &text_ui_input_layout);
+        if (FAILED(hr)) {
+            ErrorMessageAndBreak((char*)"CreateInputLayout font_ui failed!");
+        }
+
+        pVSBlob->Release();
+        pPSBlob->Release();
+
+        // -----------------------
+        // Create dynamix text_ui buffer
+        {
+            D3D11_BUFFER_DESC vertexBufferDesc = {};
+            vertexBufferDesc.Usage = D3D11_USAGE_DYNAMIC;
+            vertexBufferDesc.ByteWidth = sizeof(TextUiVertex) * MAX_TEXT_UI_VERTEX_COUNT;
+            vertexBufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+            vertexBufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+
+            hr = id3d11_device->CreateBuffer(&vertexBufferDesc, nullptr, &text_ui_vertex_buffer);
+            if (FAILED(hr)) {
+                ErrorMessageAndBreak((char*)"CreateBuffer for text_ui dynamic vertex buffer failed!");
             }
         }
     }
@@ -1197,6 +1267,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 }
             }
 
+            DrawDot({0.0f, 0.0f}, {1.0f, 1.0f, 1.0f});
+
             // --------------
             // Draw minimap
             {
@@ -1217,9 +1289,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             {
                 SetDefaultViewportDimensions();
 
-                char debug_buffer[256] = {};
+                Vec2f cursor01 = {0.0f, 0.0f};
+                char debug_buffer[256];
+                memset(debug_buffer, 0, sizeof(debug_buffer));
+
                 sprintf(debug_buffer, "Frames: %llu\n", frame_counter);
-                Vec2f cursor01 = { 5.0f, GetVHInPx(debug_font_vh_size) };
+                cursor01 = { 5.0f, GetVHInPx(debug_font_vh_size) };
                 cursor01 = DrawTextToScreen((char*)debug_buffer, cursor01, &g_debug_font);
                 memset(debug_buffer, 0, sizeof(debug_buffer));
 
@@ -1465,6 +1540,7 @@ Vec2f DrawTextToScreen(char* text, Vec2f screen_pos, FontAtlasInfo* font_info) {
         if (c == '\n') {
             cursor.x = cursor_original.x;
             cursor.y += font_info->font_size_px;
+            continue;
         }
 
         FontGlyphInfo glyph = font_info->glyphs[c - 32];
@@ -1512,6 +1588,14 @@ Vec2f DrawTextToScreen(char* text, Vec2f screen_pos, FontAtlasInfo* font_info) {
         deviceContext->Draw(6, 0);
 
         cursor.x += glyph.advance;
+    }
+
+    if (cursor.x < 0) {
+        ErrorMessageAndBreak((char*)"Cursor x less than 0");
+    }
+
+    if (cursor.y < 0) {
+        ErrorMessageAndBreak((char*)"Cursor y less than 0");
     }
 
     return cursor;
@@ -1685,6 +1769,30 @@ void DrawRectangle(Vec2f top_left, Vec2f top_right, Vec2f bot_left, Vec2f bot_ri
     UINT offset = 0;
     deviceContext->IASetVertexBuffers(0, 1, &rectangle_vertex_buffer, &stride, &offset);
     deviceContext->Draw(6, 0);
+}
+
+void DrawDot(Vec2f ndc, Vec3f color) {
+    LineDotVertex vertices[] = {
+        { DirectX::XMFLOAT4(ndc.x, ndc.y, 1.0f, 1.0f), DirectX::XMFLOAT4(color.x, color.y, color.z, 1.0f) },
+    };
+
+    D3D11_MAPPED_SUBRESOURCE mappedResource;
+    HRESULT hr = deviceContext->Map(linedot_vertex_buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
+    if (FAILED(hr)) {
+        ErrorMessageAndBreak((char*)"Map for linedot dynamic vertex buffer failed!");
+    }
+
+    memcpy(mappedResource.pData, vertices, sizeof(LineDotVertex));
+    deviceContext->Unmap(linedot_vertex_buffer, 0);
+    deviceContext->IASetInputLayout(linedot_input_layout);
+    deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_POINTLIST);
+    deviceContext->VSSetShader(linedot_vertex_shader, nullptr, 0);
+    deviceContext->PSSetShader(linedot_pixel_shader, nullptr, 0);
+
+    UINT stride = sizeof(LineDotVertex);
+    UINT offset = 0;
+    deviceContext->IASetVertexBuffers(0, 1, &linedot_vertex_buffer, &stride, &offset);
+    deviceContext->Draw(1, 0);
 }
 
 void SetDefaultViewportDimensions() {
