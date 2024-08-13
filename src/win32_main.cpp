@@ -89,12 +89,12 @@ struct Camera2D {
     f32 zoom;
 };
 
-struct ViewProjectionMatrixBufferType {
-    DirectX::XMMATRIX view_projection_matrix;
+struct ViewMatrixBufferType {
+    DirectX::XMMATRIX view_matrix;
 };
 
-struct AspectProjectionMatrixBufferType {
-    DirectX::XMMATRIX aspect_projection_matrix;
+struct ViewProjectionMatrixBufferType {
+    DirectX::XMMATRIX view_projection_matrix;
 };
 
 struct ModelBufferType {
@@ -109,6 +109,18 @@ struct Vec2i {
 struct Vec2f {
     f32 x;
     f32 y;
+};
+
+struct Vec3i {
+    i32 x;
+    i32 y;
+    i32 z;
+};
+
+struct Vec3f {
+    f32 x;
+    f32 y;
+    f32 z;
 };
 
 enum class ImageFileType {
@@ -226,6 +238,10 @@ void WindowResizeEvent();
 
 Vec2f GetMousePositionInWindow();
 
+void SetDefaultViewportDimensions();
+
+void DrawRectangle(Vec2f top_left, Vec2f top_right, Vec2f bot_left, Vec2f bot_right, Vec3f color);
+
 DirectX::XMMATRIX GetViewportProjectionMatrix();
 
 DirectX::XMMATRIX GetViewportViewMatrix();
@@ -238,6 +254,9 @@ void PlayMonoSound(Buffer audio_buffer);
 
 // ---------
 // Globals
+
+int map_width = 8;
+int map_height = 8;
 
 Buffer sound_buffer_1 = {};
 Buffer sound_buffer_2 = {};
@@ -267,9 +286,13 @@ f32 frame_delta = 0.0f;
 int mousewheel_delta = 0;
 FrameInput frame_input = {};
 
+const int buffer_slot_view_projection = 0;
+const int buffer_slot_model = 1;
+const int buffer_slot_view = 2;
+
 ID3D11Buffer* cbuffer_view_projection = nullptr;
-ID3D11Buffer* cbuffer_aspect_projection_matrix = nullptr;
 ID3D11Buffer* cbuffer_model = nullptr;
+ID3D11Buffer* cbuffer_view = nullptr;
 
 HWND main_window_handle;
 MSG main_window_message;
@@ -453,13 +476,6 @@ void ResizeViewport(int width, int height) {
 
     backBuffer->Release();
     deviceContext->OMSetRenderTargets(1, &renderTargetView, nullptr);
-
-    render_viewport.TopLeftX = 0;
-    render_viewport.TopLeftY = 0;
-    render_viewport.Width = width;
-    render_viewport.Height = height;
-    render_viewport.MinDepth = 0.0f;
-    render_viewport.MaxDepth = 1.0f;
 
     char buffer[128] = {};
     sprintf(buffer, "Viewport resize event, x: %d, y: %d\n", width, height);
@@ -670,11 +686,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         backBuffer->Release();
         
         deviceContext->OMSetRenderTargets(1, &renderTargetView, NULL);
-
-        render_viewport.Width = (float)g_main_window.width_px;
-        render_viewport.Height = (float)g_main_window.height_px;
-        render_viewport.MinDepth = 0.0f;
-        render_viewport.MaxDepth = 1.0f;
     }
 
     // -----------------------
@@ -728,18 +739,18 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     {
         HRESULT hresult;
 
-        // View projection matrix
-        D3D11_BUFFER_DESC matrixBufferDesc = {};
-        matrixBufferDesc.Usage = D3D11_USAGE_DYNAMIC;
-        matrixBufferDesc.ByteWidth = sizeof(ViewProjectionMatrixBufferType);
-        matrixBufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-        matrixBufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-        hresult = id3d11_device->CreateBuffer(&matrixBufferDesc, nullptr, &cbuffer_view_projection);
+        // View projection matrix b0
+        D3D11_BUFFER_DESC viewProjectionMatrixBufferDesc = {};
+        viewProjectionMatrixBufferDesc.Usage = D3D11_USAGE_DYNAMIC;
+        viewProjectionMatrixBufferDesc.ByteWidth = sizeof(ViewProjectionMatrixBufferType);
+        viewProjectionMatrixBufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        viewProjectionMatrixBufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        hresult = id3d11_device->CreateBuffer(&viewProjectionMatrixBufferDesc, nullptr, &cbuffer_view_projection);
         if (FAILED(hresult)) {
             ErrorMessageAndBreak((char*)"CreateBuffer ViewProjectionMatrixBufferType failed!");
         }
         
-        // Model matrix
+        // Model matrix b1
         D3D11_BUFFER_DESC modelBufferDesc = {};
         modelBufferDesc.Usage = D3D11_USAGE_DYNAMIC;
         modelBufferDesc.ByteWidth = sizeof(ModelBufferType);
@@ -750,34 +761,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             ErrorMessageAndBreak((char*)"CreateBuffer ModelBufferType failed!");
         }
 
-        // Aspect projection matrix
-        D3D11_BUFFER_DESC projectionBufferDesc = {};
-        projectionBufferDesc.Usage = D3D11_USAGE_DYNAMIC;
-        projectionBufferDesc.ByteWidth = sizeof(AspectProjectionMatrixBufferType);
-        projectionBufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-        projectionBufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-        hresult = id3d11_device->CreateBuffer(&projectionBufferDesc, nullptr, &cbuffer_aspect_projection_matrix);
+        // View matrix b2
+        D3D11_BUFFER_DESC viewMatrixBufferDesc = {};
+        viewMatrixBufferDesc.Usage = D3D11_USAGE_DYNAMIC;
+        viewMatrixBufferDesc.ByteWidth = sizeof(ViewMatrixBufferType);
+        viewMatrixBufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        viewMatrixBufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        hresult = id3d11_device->CreateBuffer(&viewMatrixBufferDesc, nullptr, &cbuffer_view);
         if (FAILED(hresult)) {
-            ErrorMessageAndBreak((char*)"CreateBuffer ProjectionMatrixBufferType failed!");
-        }
-
-        // Update aspect projection matrix
-        {
-            DirectX::XMMATRIX projectionMatrix = DirectX::XMMatrixOrthographicLH((float)g_main_window.width_px, (float)g_main_window.height_px, 0.0f, 10.0f);
-            AspectProjectionMatrixBufferType projection = {
-                .aspect_projection_matrix = DirectX::XMMatrixTranspose(projectionMatrix),
-            };
-
-            D3D11_MAPPED_SUBRESOURCE mappedResource1;
-            HRESULT hr = deviceContext->Map(cbuffer_aspect_projection_matrix, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource1);
-            if (FAILED(hr)) {
-                ErrorMessageAndBreak((char*)"deviceContext->Map() ProjectionMatrixBufferType failed!");
-            }
-
-            AspectProjectionMatrixBufferType* projection_data_ptr = (AspectProjectionMatrixBufferType*)mappedResource1.pData;
-            projection_data_ptr->aspect_projection_matrix = projection.aspect_projection_matrix;
-            deviceContext->Unmap(cbuffer_aspect_projection_matrix, 0);
-            deviceContext->VSSetConstantBuffers(2, 1, &cbuffer_aspect_projection_matrix);
+            ErrorMessageAndBreak((char*)"CreateBuffer ViewMatrixBufferType failed!");
         }
     }
 
@@ -1143,11 +1135,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         // Render viewport frame
         {
             deviceContext->ClearRenderTargetView(renderTargetView, clear_color);
-            deviceContext->RSSetViewports(1, &render_viewport);
+
+            SetDefaultViewportDimensions();
+            
             deviceContext->OMSetRenderTargets(1, &renderTargetView, nullptr);
 
-            // --------------------------------
-            // Update viewport camera cbuffer
+            // -----------------
+            // Update cbuffers
             {
                 DirectX::XMMATRIX viewMatrix = GetViewportViewMatrix();
                 DirectX::XMMATRIX projectionMatrix = GetViewportProjectionMatrix();
@@ -1157,58 +1151,44 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                     .view_projection_matrix = DirectX::XMMatrixTranspose(view_projection_matrix),
                 };
 
-                D3D11_MAPPED_SUBRESOURCE mappedResource;
-                HRESULT hr = deviceContext->Map(cbuffer_view_projection, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
-                if (FAILED(hr)) {
-                    ErrorMessageAndBreak((char*)"deviceContext->Map() ViewProjectionMatrixBufferType failed!");
+                // -------------------------------
+                // Update view projection matrix
+                {
+                    D3D11_MAPPED_SUBRESOURCE mappedResource;
+                    HRESULT hr = deviceContext->Map(cbuffer_view_projection, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
+                    if (FAILED(hr)) {
+                        ErrorMessageAndBreak((char*)"deviceContext->Map() ViewProjectionMatrixBufferType failed!");
+                    }
+
+                    ViewProjectionMatrixBufferType* view_projection_data_ptr = (ViewProjectionMatrixBufferType*)mappedResource.pData;
+                    view_projection_data_ptr->view_projection_matrix = viewProjection.view_projection_matrix;
+                    deviceContext->Unmap(cbuffer_view_projection, 0);
+                    deviceContext->VSSetConstantBuffers(buffer_slot_view_projection, 1, &cbuffer_view_projection);
                 }
 
-                ViewProjectionMatrixBufferType* view_projection_data_ptr = (ViewProjectionMatrixBufferType*)mappedResource.pData;
-                view_projection_data_ptr->view_projection_matrix = viewProjection.view_projection_matrix;
-                deviceContext->Unmap(cbuffer_view_projection, 0);
-                deviceContext->VSSetConstantBuffers(0, 1, &cbuffer_view_projection);
+                // --------------------
+                // Update view matrix
+                {
+                    D3D11_MAPPED_SUBRESOURCE mappedResource;
+                    HRESULT hr = deviceContext->Map(cbuffer_view, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
+                    if (FAILED(hr)) {
+                        ErrorMessageAndBreak((char*)"deviceContext->Map() ViewMatrixBufferType failed!");
+                    }
+
+                    ViewMatrixBufferType* view_data_ptr = (ViewMatrixBufferType*)mappedResource.pData;
+                    view_data_ptr->view_matrix = viewMatrix;
+                    deviceContext->Unmap(cbuffer_view, 0);
+                    deviceContext->VSSetConstantBuffers(buffer_slot_view, 1, &cbuffer_view);
+                }
             }
 
             // -----------------
             // Draw background
-            {
-                RectangleVertex vertices[] = {
-                    { DirectX::XMFLOAT4(-1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT4(0.0f, 0.0f, 0.0f, 1.0f) },  // Top-left
-                    { DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT4(0.0f, 0.0f, 0.0f, 1.0f) },   // Top-right
-                    { DirectX::XMFLOAT4(-1.0f, -1.0f, 1.0f, 1.0f), DirectX::XMFLOAT4(0.0f, 0.0f, 0.0f, 1.0f) }, // Bottom-left
-
-                    { DirectX::XMFLOAT4(-1.0f, -1.0f, 1.0f, 1.0f), DirectX::XMFLOAT4(0.0f, 0.0f, 0.0f, 1.0f) }, // Bottom-left
-                    { DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT4(0.0f, 0.0f, 0.0f, 1.0f) },   // Top-right
-                    { DirectX::XMFLOAT4(1.0f, -1.0f, 1.0f, 1.0f), DirectX::XMFLOAT4(0.0f, 0.0f, 0.0f, 1.0f) }   // Bottom-right
-                };
-
-                D3D11_MAPPED_SUBRESOURCE mappedResource;
-                HRESULT hr = deviceContext->Map(rectangle_vertex_buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
-                if (FAILED(hr)) {
-                    ErrorMessageAndBreak((char*)"Map for rectangle dynamic vertex buffer failed!");
-                }
-
-                memcpy(mappedResource.pData, vertices, sizeof(RectangleVertex) * 6);
-                deviceContext->Unmap(rectangle_vertex_buffer, 0);
-
-                deviceContext->IASetInputLayout(rectangle_input_layout);
-                deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
-                deviceContext->VSSetShader(rectangle_vertex_shader, nullptr, 0);
-                deviceContext->PSSetShader(rectangle_pixel_shader, nullptr, 0);
-
-                UINT stride = sizeof(RectangleVertex);
-                UINT offset = 0;
-                deviceContext->IASetVertexBuffers(0, 1, &rectangle_vertex_buffer, &stride, &offset);
-                deviceContext->Draw(6, 0);
-            }
+            DrawRectangle({-1.0f, 1.0f}, {1.0f, 1.0f}, {-1.0f, -1.0f}, {1.0f, -1.0f}, {0.0f, 0.0f, 0.0f});
 
             // ---------------
             // Draw tilemaps
             {
-                int map_width = 8;
-                int map_height = 8;
-
                 for (int y = 0; y < map_height; y++) {
                     for (int x = 0; x < map_width; x++) {
                         Vec2f coordinate = {(f32)x, f32(y)};
@@ -1217,9 +1197,26 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 }
             }
 
+            // --------------
+            // Draw minimap
+            {
+                int map_width = GetVHInPx(35.0f);
+                render_viewport.TopLeftX = g_main_window.width_px - map_width;
+                render_viewport.TopLeftY = 0;
+                render_viewport.Width = map_width;
+                render_viewport.Height = map_width;
+                render_viewport.MinDepth = 0.0f;
+                render_viewport.MaxDepth = 1.0f;
+                deviceContext->RSSetViewports(1, &render_viewport);
+
+                DrawRectangle({-1.0f, 1.0f}, {1.0f, 1.0f}, {-1.0f, -1.0f}, {1.0f, -1.0f}, {0.05f, 0.05f, 0.05f});
+            }
+
             // ---------------
             // Display debug
             {
+                SetDefaultViewportDimensions();
+
                 char debug_buffer[256] = {};
                 sprintf(debug_buffer, "Frames: %llu\n", frame_counter);
                 Vec2f cursor01 = { 5.0f, GetVHInPx(debug_font_vh_size) };
@@ -1603,7 +1600,7 @@ void DrawTilemapTile(ID3D11ShaderResourceView* texture, Vec2f coordinate) {
     ModelBufferType* model_data_ptr = (ModelBufferType*)mappedResource.pData;
     model_data_ptr->modelMatrix = modelBuffer.modelMatrix;
     deviceContext->Unmap(cbuffer_model, 0);
-    deviceContext->VSSetConstantBuffers(1, 1, &cbuffer_model);
+    deviceContext->VSSetConstantBuffers(buffer_slot_model, 1, &cbuffer_model);
 
     // Shader part
     deviceContext->IASetInputLayout(tilemap_tile_input_layout);
@@ -1658,4 +1655,44 @@ f32 GetVWInPx(f32 vw) {
 
 f32 GetVHInPx(f32 vh) {
     return (vh / 100.0f) * (f32)g_main_window.height_px;
+}
+
+void DrawRectangle(Vec2f top_left, Vec2f top_right, Vec2f bot_left, Vec2f bot_right, Vec3f color) {
+    RectangleVertex vertices[] = {
+        { DirectX::XMFLOAT4(top_left.x, top_left.y, 1.0f, 1.0f), DirectX::XMFLOAT4(color.x, color.y, color.z, 1.0f) },  // Top-left
+        { DirectX::XMFLOAT4(top_right.x, top_right.y, 1.0f, 1.0f), DirectX::XMFLOAT4(color.x, color.y, color.z, 1.0f) },   // Top-right
+        { DirectX::XMFLOAT4(bot_left.x, bot_left.y, 1.0f, 1.0f), DirectX::XMFLOAT4(color.x, color.y, color.z, 1.0f) }, // Bottom-left
+
+        { DirectX::XMFLOAT4(bot_left.x, bot_left.y, 1.0f, 1.0f), DirectX::XMFLOAT4(color.x, color.y, color.z, 1.0f) }, // Bottom-left
+        { DirectX::XMFLOAT4(top_right.x, top_right.y, 1.0f, 1.0f), DirectX::XMFLOAT4(color.x, color.y, color.z, 1.0f) },   // Top-right
+        { DirectX::XMFLOAT4(bot_right.x, bot_right.y, 1.0f, 1.0f), DirectX::XMFLOAT4(color.x, color.y, color.z, 1.0f) }   // Bottom-right
+    };
+
+    D3D11_MAPPED_SUBRESOURCE mappedResource;
+    HRESULT hr = deviceContext->Map(rectangle_vertex_buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
+    if (FAILED(hr)) {
+        ErrorMessageAndBreak((char*)"Map for rectangle dynamic vertex buffer failed!");
+    }
+
+    memcpy(mappedResource.pData, vertices, sizeof(RectangleVertex) * 6);
+    deviceContext->Unmap(rectangle_vertex_buffer, 0);
+    deviceContext->IASetInputLayout(rectangle_input_layout);
+    deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    deviceContext->VSSetShader(rectangle_vertex_shader, nullptr, 0);
+    deviceContext->PSSetShader(rectangle_pixel_shader, nullptr, 0);
+
+    UINT stride = sizeof(RectangleVertex);
+    UINT offset = 0;
+    deviceContext->IASetVertexBuffers(0, 1, &rectangle_vertex_buffer, &stride, &offset);
+    deviceContext->Draw(6, 0);
+}
+
+void SetDefaultViewportDimensions() {
+    render_viewport.Width = (float)g_main_window.width_px;
+    render_viewport.Height = (float)g_main_window.height_px;
+    render_viewport.TopLeftX = 0.0f;
+    render_viewport.TopLeftY = 0.0f;
+    render_viewport.MinDepth = 0.0f;
+    render_viewport.MaxDepth = 1.0f;
+    deviceContext->RSSetViewports(1, &render_viewport);
 }
