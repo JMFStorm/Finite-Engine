@@ -23,6 +23,8 @@
 
 const int MAX_TEXT_UI_VERTEX_COUNT = 1000;
 
+const int STR_BUFFER_COUNT = 256;
+
 typedef unsigned char byte;
 
 static_assert(sizeof(unsigned char) * CHAR_BIT == 8, "unsigned char is not 8 bits");
@@ -48,14 +50,45 @@ static_assert(sizeof(double) * CHAR_BIT == 64, "double is not 64 bits");
 // ---------
 // Structs
 
+struct Vec2i {
+    i32 x;
+    i32 y;
+};
+
+struct Vec2f {
+    f32 x;
+    f32 y;
+};
+
+struct Vec3i {
+    i32 x;
+    i32 y;
+    i32 z;
+};
+
+struct Vec3f {
+    f32 x;
+    f32 y;
+    f32 z;
+};
+
 struct Buffer {
     i32 size_bytes;
     byte* data;
 };
 
 struct Window {
-    i32 width_px;
-    i32 height_px;
+    Vec2i size_px;
+    Vec2i new_size_px;
+    RECT original_rect;
+    LARGE_INTEGER frequency;
+    LARGE_INTEGER last_frame_time;
+    HWND handle;
+    DWORD original_style;
+    u64 frame_counter = 0;
+    f32 frame_delta = 0.0f;
+    i32 mousewheel_delta = 0;
+    bool is_resizing;
 };
 
 struct KeyInputState {
@@ -99,28 +132,6 @@ struct ViewProjectionMatrixBufferType {
 
 struct ModelBufferType {
     DirectX::XMMATRIX modelMatrix;
-};
-
-struct Vec2i {
-    i32 x;
-    i32 y;
-};
-
-struct Vec2f {
-    f32 x;
-    f32 y;
-};
-
-struct Vec3i {
-    i32 x;
-    i32 y;
-    i32 z;
-};
-
-struct Vec3f {
-    f32 x;
-    f32 y;
-    f32 z;
 };
 
 enum class ImageFileType {
@@ -207,8 +218,10 @@ typedef struct {
  *
  * Apply debugging breakpoint if DEBUG -flag is set.
  */
+void ErrorMessageAndBreak(wchar_t* message);
 void ErrorMessageAndBreak(char* message);
 
+void DebugMessage(wchar_t* message);
 void DebugMessage(char* message);
 
 void LoadTextureFromFilepath(Texture* texture, char* filepath);
@@ -216,8 +229,6 @@ void LoadTextureFromFilepath(Texture* texture, char* filepath);
 bool IsKeyPressed(int key);
 
 bool IsWindowFocused(HWND window_handle);
-
-void DrawTilemapTile(ID3D11ShaderResourceView* texture, Vec2f coordinate);
 
 void StrToWideStr(char* str, wchar_t* wresult, int str_count);
 
@@ -227,30 +238,30 @@ unsigned char* LoadFileToPtr(wchar_t* filename, size_t* get_file_size);
 
 Vec2f ScreenPxToNDC(int x, int y);
 
-Vec2f DrawTextToScreen(char* text, Vec2f screen_pos, FontAtlasInfo* font_info);
-
 f32 GetTextWidthPx(char* text, FontAtlasInfo* font_info);
 
 FontAtlasInfo LoadFontAtlas(char* filepath, float pixel_height);
 
 f32 GetVWInPx(f32 vw);
-
 f32 GetVHInPx(f32 vh);
 
 void LoadGlobalFonts();
 
-void WindowResizeEvent();
+char* GetCStrBuffer256();
+wchar_t* GetWideStrBuffer256();
 
-void DrawDot(Vec2f ndc, Vec3f color);
+void WindowResizeEvent();
 
 Vec2f GetMousePositionInWindow();
 
 void SetDefaultViewportDimensions();
 
+void DrawDot(Vec2f ndc, Vec3f color);
+Vec2f DrawTextToScreen(char* text, Vec2f screen_pos, FontAtlasInfo* font_info);
 void DrawRectangle(Vec2f top_left, Vec2f top_right, Vec2f bot_left, Vec2f bot_right, Vec3f color);
+void DrawTilemapTile(ID3D11ShaderResourceView* texture, Vec2f coordinate);
 
 DirectX::XMMATRIX GetViewportProjectionMatrix();
-
 DirectX::XMMATRIX GetViewportViewMatrix();
 
 Vec2f ScreenSpaceToTilemapCoords(Vec2f tilemap_coord);
@@ -277,32 +288,16 @@ IXAudio2MasteringVoice* pMasterVoice = NULL;
 const f32 debug_font_vh_size = 1.5f;
 FontAtlasInfo g_debug_font;
 
-bool g_isResizing = false;
-DWORD g_OriginalStyle;
-RECT g_OriginalRect;
-Window g_main_window = {};
-Window g_new_window_size = {};
-
-LARGE_INTEGER g_frequency;
-LARGE_INTEGER g_lastTime;
-
-Vec2f viewport_mouse = {};
-
-u64 frame_counter = 0;
-f32 frame_delta = 0.0f;
-int mousewheel_delta = 0;
+Window g_window = {};
 FrameInput frame_input = {};
 
-const int buffer_slot_view_projection = 0;
-const int buffer_slot_model = 1;
-const int buffer_slot_view = 2;
+const int BUFFER_SLOT_VIEW_PROJECTION = 0;
+const int BUFFER_SLOT_MODEL = 1;
+const int BUFFER_SLOT_VIEW = 2;
 
 ID3D11Buffer* cbuffer_view_projection = nullptr;
 ID3D11Buffer* cbuffer_model = nullptr;
 ID3D11Buffer* cbuffer_view = nullptr;
-
-HWND main_window_handle;
-MSG main_window_message;
 
 IDXGISwapChain *swapChain;
 ID3D11Device* id3d11_device;
@@ -330,13 +325,12 @@ ID3D11Buffer* rectangle_vertex_buffer = nullptr;
 ID3D11InputLayout* rectangle_input_layout = nullptr;
 
 ID3D11VertexShader* linedot_vertex_shader = nullptr;
-ID3D11GeometryShader* linedot_geometry_shader = nullptr;
 ID3D11PixelShader* linedot_pixel_shader = nullptr;
 ID3D11Buffer* linedot_vertex_buffer = nullptr;
 ID3D11InputLayout* linedot_input_layout = nullptr;
 
-wchar_t open_filename_path[260] = {};
-OPENFILENAMEW open_filename_struct;
+char temp_cstr[STR_BUFFER_COUNT] = {};
+wchar_t temp_wstr[STR_BUFFER_COUNT] = {};
 
 const wchar_t* viewport_window_class_name = L"ViewportWindowClass";
 const wchar_t* window_class_name = L"MyWindowClass";
@@ -365,7 +359,7 @@ void LoadTextureFromFilepath(Texture* texture, char* filepath) {
     auto image = stbi_load(filepath, &image_x, &image_y, &image_channels, bytes_per_pixel);
 
     if (!image) {
-       ErrorMessageAndBreak((char*)"stbi_load failed");
+       ErrorMessageAndBreak((wchar_t*)L"stbi_load failed");
     }
 
     D3D11_TEXTURE2D_DESC textureDesc = {};
@@ -388,7 +382,7 @@ void LoadTextureFromFilepath(Texture* texture, char* filepath) {
     hr = id3d11_device->CreateTexture2D(&textureDesc, &img_subresource_data, &texture_2d);
 
     if (FAILED(hr)) {
-        ErrorMessageAndBreak((char*)"Failed to create texture");
+        ErrorMessageAndBreak((wchar_t*)L"Failed to create texture");
     }
 
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
@@ -410,18 +404,23 @@ void LoadTextureFromFilepath(Texture* texture, char* filepath) {
     stbi_image_free(image); // Free filedata
 }
 
-void ErrorMessageAndBreak(char* message) {
-    const int size = 258;
-    wchar_t wide_message[size];
-
-    MultiByteToWideChar(CP_UTF8, 0, message, -1, wide_message, size);
-    MessageBoxW(NULL, wide_message, L"Error", MB_ICONERROR | MB_OK);
-
+void _ErrorMessageAndBreak(wchar_t* message) {
+    MessageBoxW(NULL, message, L"Error", MB_ICONERROR | MB_OK);
 #ifdef DEBUG
     __debugbreak();
 #else
     exit(1);
 #endif
+}
+
+void ErrorMessageAndBreak(wchar_t* message) {
+    _ErrorMessageAndBreak(message);
+}
+
+void ErrorMessageAndBreak(char* message) {
+    wchar_t* wide_message = GetWideStrBuffer256();
+    MultiByteToWideChar(CP_UTF8, 0, message, -1, wide_message, STR_BUFFER_COUNT);
+    _ErrorMessageAndBreak(wide_message);
 }
 
 bool IsWindowFocused(HWND window_handle) {
@@ -431,10 +430,15 @@ bool IsWindowFocused(HWND window_handle) {
 
 void DebugMessage(char* message) {
 #ifdef DEBUG
-    const int size = 258;
-    wchar_t wide_message[size];
-    MultiByteToWideChar(CP_UTF8, 0, message, -1, wide_message, size);
+    wchar_t* wide_message = GetWideStrBuffer256();
+    MultiByteToWideChar(CP_UTF8, 0, message, -1, wide_message, STR_BUFFER_COUNT);
     OutputDebugStringW(wide_message);
+#endif
+}
+
+void DebugMessage(wchar_t* message) {
+#ifdef DEBUG
+    OutputDebugStringW(message);
 #endif
 }
 
@@ -489,21 +493,21 @@ void ResizeViewport(int width, int height) {
     backBuffer->Release();
     deviceContext->OMSetRenderTargets(1, &renderTargetView, nullptr);
 
-    char buffer[128] = {};
-    sprintf(buffer, "Viewport resize event, x: %d, y: %d\n", width, height);
+    auto buffer = GetWideStrBuffer256();
+    wprintf(buffer, "Viewport resize event, x: %d, y: %d\n", width, height);
     DebugMessage(buffer);
 }
 
 void WindowResizeEvent() {
-    ResizeViewport(g_main_window.width_px, g_main_window.height_px);
+    ResizeViewport(g_window.size_px.x, g_window.size_px.y);
     LoadGlobalFonts();
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_CREATE: {
-            g_OriginalStyle = GetWindowLong(hwnd, GWL_STYLE);
-            GetWindowRect(hwnd, &g_OriginalRect);
+            g_window.original_style = GetWindowLong(hwnd, GWL_STYLE);
+            GetWindowRect(hwnd, &g_window.original_rect);
             break;
         }
 
@@ -515,13 +519,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 DWORD style = GetWindowLong(hwnd, GWL_STYLE);
                 if (style & WS_POPUP) {
                     // Restore original style and position
-                    SetWindowLong(hwnd, GWL_STYLE, g_OriginalStyle);
-                    SetWindowPos(hwnd, HWND_TOP, g_OriginalRect.left, g_OriginalRect.top, 
-                                 g_OriginalRect.right - g_OriginalRect.left, 
-                                 g_OriginalRect.bottom - g_OriginalRect.top,
+                    SetWindowLong(hwnd, GWL_STYLE, g_window.original_style);
+                    SetWindowPos(hwnd, HWND_TOP, g_window.original_rect.left, g_window.original_rect.top, 
+                                 g_window.original_rect.right - g_window.original_rect.left, 
+                                 g_window.original_rect.bottom - g_window.original_rect.top,
                                  SWP_FRAMECHANGED | SWP_SHOWWINDOW);
-                    g_main_window.width_px = g_OriginalRect.right - g_OriginalRect.left;
-                    g_main_window.height_px = g_OriginalRect.bottom - g_OriginalRect.top;
+                    g_window.size_px.x = g_window.original_rect.right - g_window.original_rect.left;
+                    g_window.size_px.y = g_window.original_rect.bottom - g_window.original_rect.top;
                 }
                 else {
                     // Set to fullscreen
@@ -529,8 +533,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     SetWindowPos(hwnd, HWND_TOP, 0, 0, GetSystemMetrics(SM_CXSCREEN), 
                                  GetSystemMetrics(SM_CYSCREEN), 
                                  SWP_FRAMECHANGED | SWP_SHOWWINDOW);
-                    g_main_window.width_px =  GetSystemMetrics(SM_CXSCREEN);
-                    g_main_window.height_px = GetSystemMetrics(SM_CYSCREEN);
+                    g_window.size_px.x =  GetSystemMetrics(SM_CXSCREEN);
+                    g_window.size_px.y = GetSystemMetrics(SM_CYSCREEN);
                 }
 
                 WindowResizeEvent();
@@ -540,21 +544,21 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         case WM_MOUSEWHEEL: {
             int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-            mousewheel_delta = delta;
+            g_window.mousewheel_delta = delta;
             break;
         }
 
         case WM_ENTERSIZEMOVE: {
-            g_isResizing = true;
+            g_window.is_resizing = true;
             break;
         }
 
         case WM_EXITSIZEMOVE: {
-            g_isResizing = false;
+            g_window.is_resizing = false;
             if (id3d11_device && swapChain) {
-                if (g_main_window.width_px != g_new_window_size.width_px || g_main_window.height_px != g_new_window_size.height_px) {
-                    g_main_window.width_px = g_new_window_size.width_px;
-                    g_main_window.height_px = g_new_window_size.height_px;
+                if (g_window.size_px.x != g_window.new_size_px.x || g_window.size_px.y != g_window.new_size_px.y) {
+                    g_window.size_px.x = g_window.new_size_px.x;
+                    g_window.size_px.y = g_window.new_size_px.y;
                     WindowResizeEvent();
                 }
             }
@@ -565,8 +569,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (wParam != SIZE_MINIMIZED) {
                 UINT width = LOWORD(lParam);
                 UINT height = HIWORD(lParam);
-                g_new_window_size.width_px = (i32)width;
-                g_new_window_size.height_px = (i32)height;
+                g_window.new_size_px.x = (i32)width;
+                g_window.new_size_px.y = (i32)height;
             }
             break;
         }
@@ -613,8 +617,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             style = WS_POPUP;
             exStyle = WS_EX_APPWINDOW;
 
-            g_main_window.width_px = GetSystemMetrics(SM_CXSCREEN);
-            g_main_window.height_px = GetSystemMetrics(SM_CYSCREEN);
+            g_window.size_px.x = GetSystemMetrics(SM_CXSCREEN);
+            g_window.size_px.y = GetSystemMetrics(SM_CYSCREEN);
             xPos = 0;
             yPos = 0;
         }
@@ -622,23 +626,23 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             style = WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX;
             exStyle = WS_EX_APPWINDOW | WS_EX_WINDOWEDGE;
 
-            g_main_window.width_px = 1200;
-            g_main_window.height_px = 800; 
+            g_window.size_px.x = 1200;
+            g_window.size_px.y = 800; 
 
             // Center the window on the screen
-            xPos = (GetSystemMetrics(SM_CXSCREEN) - g_main_window.width_px) / 2;
-            yPos = (GetSystemMetrics(SM_CYSCREEN) - g_main_window.height_px) / 2;
+            xPos = (GetSystemMetrics(SM_CXSCREEN) - g_window.size_px.x) / 2;
+            yPos = (GetSystemMetrics(SM_CYSCREEN) - g_window.size_px.y) / 2;
         }
 
-        RECT windowRect = {0, 0, g_main_window.width_px, g_main_window.height_px};
+        RECT windowRect = {0, 0, g_window.size_px.x, g_window.size_px.y};
         AdjustWindowRectEx(&windowRect, style, FALSE, exStyle);
 
-        main_window_handle = CreateWindowExW(
+        g_window.handle = CreateWindowExW(
             exStyle, window_class_name, window_title, style,
             xPos, yPos, windowRect.right - windowRect.left, windowRect.bottom - windowRect.top,
             NULL, NULL, hInstance, NULL);
 
-        if (main_window_handle == NULL) {
+        if (g_window.handle == NULL) {
             ErrorMessageAndBreak((char*)"Window Creation Failed!");
         }
     }
@@ -666,22 +670,22 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     // ------------
     // Init timer
 
-    QueryPerformanceFrequency(&g_frequency);
-    QueryPerformanceCounter(&g_lastTime);
+    QueryPerformanceFrequency(&g_window.frequency);
+    QueryPerformanceCounter(&g_window.last_frame_time);
 
     // ----------------
     // Init DirectX 11
     {
         DXGI_SWAP_CHAIN_DESC scd = {};
         scd.BufferCount = 2;
-        scd.BufferDesc.Width = g_main_window.width_px;
-        scd.BufferDesc.Height = g_main_window.height_px;
+        scd.BufferDesc.Width = g_window.size_px.x;
+        scd.BufferDesc.Height = g_window.size_px.y;
         scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
         scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
         scd.SampleDesc.Count = 1;
         scd.Windowed = TRUE;
         scd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
-        scd.OutputWindow = main_window_handle;
+        scd.OutputWindow = g_window.handle;
 
         HRESULT hr = D3D11CreateDeviceAndSwapChain(
             nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_DEBUG,
@@ -887,22 +891,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         vsBlob->Release();
         psBlob->Release();
 
-        // -----------------
-        // Geometry shader
-        {
-            ID3DBlob* gsBlob = nullptr;
-            hr = D3DCompileFromFile(
-                L"G:\\projects\\game\\finite-engine-dev\\resources\\shaders\\linedot.hlsl",
-                nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
-                "GS_PointExpand", "gs_5_0", 0, 0, &gsBlob, &error_blob);
-            CheckShaderCompileError(hr, error_blob);
-
-            hr = id3d11_device->CreateGeometryShader(gsBlob->GetBufferPointer(), gsBlob->GetBufferSize(), nullptr, &linedot_geometry_shader);
-            if (FAILED(hr)) {
-                ErrorMessageAndBreak((char*)"CreateGeometryShader failed!");
-            }
-        }
-
         // -----------------------
         // Create dynamic buffer
         {
@@ -1086,30 +1074,30 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     LoadTextureFromFilepath(&test_texture_01, (char*)"G:\\projects\\game\\finite-engine-dev\\resources\\images\\tiles\\grassland_tile_01.png");
     
-    ShowWindow(main_window_handle, nCmdShow);
-    UpdateWindow(main_window_handle);
+    ShowWindow(g_window.handle, nCmdShow);
+    UpdateWindow(g_window.handle);
 
     LoadGlobalFonts();
 
-
     // -----------
     // Game loop
-    while (main_window_message.message != WM_QUIT) {
+    MSG window_message;
+    while (window_message.message != WM_QUIT) {
         // --------------
         // Handle input
         {
-            mousewheel_delta = 0;
+            g_window.mousewheel_delta = 0;
 
-            if (PeekMessage(&main_window_message, NULL, 0, 0, PM_REMOVE)) {
-                TranslateMessage(&main_window_message);
-                DispatchMessageW(&main_window_message);
+            if (PeekMessage(&window_message, NULL, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&window_message);
+                DispatchMessageW(&window_message);
             }
 
             Vec2f mouse_pos = GetMousePositionInWindow();
             frame_input.mouse_x = mouse_pos.x;
             frame_input.mouse_y = mouse_pos.y;
 
-            if (IsWindowFocused(main_window_handle)) {
+            if (IsWindowFocused(g_window.handle)) {
                 int keys_struct_size = sizeof(GameKeys);
                 int keys_size = sizeof(KeyInputState);
                 int keys_count = keys_struct_size / keys_size;
@@ -1131,10 +1119,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 frame_input.mousewheel_up = false;
                 frame_input.mousewheel_down = false;
 
-                if (mousewheel_delta > 0) {
+                if (g_window.mousewheel_delta > 0) {
                     frame_input.mousewheel_up = true;
                 }   
-                else if (mousewheel_delta < 0) {
+                else if (g_window.mousewheel_delta < 0) {
                     frame_input.mousewheel_down = true;
                 }
 
@@ -1150,14 +1138,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             LARGE_INTEGER currentTime;
             QueryPerformanceCounter(&currentTime);
 
-            LONGLONG elapsedTicks = currentTime.QuadPart - g_lastTime.QuadPart;
-            frame_delta = static_cast<f32>(elapsedTicks) / g_frequency.QuadPart;
-            g_lastTime = currentTime;
-
-            // char buffer[32];
-            // f32 frame_delta_ms = frame_delta * 1000.0f;
-            // sprintf(buffer, "Delta in ms: %.6f\n", frame_delta_ms);
-            // DebugMessage(buffer);
+            LONGLONG elapsedTicks = currentTime.QuadPart - g_window.last_frame_time.QuadPart;
+            g_window.frame_delta = static_cast<f32>(elapsedTicks) / g_window.frequency.QuadPart;
+            g_window.last_frame_time = currentTime;
         }
 
         // -------------
@@ -1174,16 +1157,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             }
 
             if (frame_input.keys.arrow_down.is_down) {
-                viewport_camera.position.y -= 5.0f * frame_delta;
+                viewport_camera.position.y -= 5.0f * g_window.frame_delta;
             }
             if (frame_input.keys.arrow_up.is_down) {
-                viewport_camera.position.y += 5.0f * frame_delta;
+                viewport_camera.position.y += 5.0f * g_window.frame_delta;
             }
             if (frame_input.keys.arrow_left.is_down) {
-                viewport_camera.position.x -= 5.0f * frame_delta;
+                viewport_camera.position.x -= 5.0f * g_window.frame_delta;
             }
             if (frame_input.keys.arrow_right.is_down) {
-                viewport_camera.position.x += 5.0f * frame_delta;
+                viewport_camera.position.x += 5.0f * g_window.frame_delta;
             }
 
             // ----------------------------
@@ -1193,8 +1176,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 DirectX::XMMATRIX projection = GetViewportProjectionMatrix();
                 DirectX::XMMATRIX viewProjInverse = DirectX::XMMatrixInverse(nullptr, XMMatrixMultiply(viewMatrix, projection));
 
-                float normalizedX = (2.0f * frame_input.mouse_x) / g_new_window_size.width_px - 1.0f;
-                float normalizedY = 1.0f - (2.0f * frame_input.mouse_y) / g_new_window_size.height_px;
+                float normalizedX = (2.0f * frame_input.mouse_x) / g_window.new_size_px.x - 1.0f;
+                float normalizedY = 1.0f - (2.0f * frame_input.mouse_y) / g_window.new_size_px.y;
 
                 DirectX::XMVECTOR mouseNDC = DirectX::XMVectorSet(normalizedX, normalizedY, 1.0f, 1.0f);
                 DirectX::XMVECTOR worldPosition = XMVector3TransformCoord(mouseNDC, viewProjInverse);
@@ -1250,7 +1233,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                     ViewProjectionMatrixBufferType* view_projection_data_ptr = (ViewProjectionMatrixBufferType*)mappedResource.pData;
                     view_projection_data_ptr->view_projection_matrix = viewProjection.view_projection_matrix;
                     deviceContext->Unmap(cbuffer_view_projection, 0);
-                    deviceContext->VSSetConstantBuffers(buffer_slot_view_projection, 1, &cbuffer_view_projection);
+                    deviceContext->VSSetConstantBuffers(BUFFER_SLOT_VIEW_PROJECTION, 1, &cbuffer_view_projection);
                 }
 
                 // --------------------
@@ -1265,7 +1248,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                     ViewMatrixBufferType* view_data_ptr = (ViewMatrixBufferType*)mappedResource.pData;
                     view_data_ptr->view_matrix = viewMatrix;
                     deviceContext->Unmap(cbuffer_view, 0);
-                    deviceContext->VSSetConstantBuffers(buffer_slot_view, 1, &cbuffer_view);
+                    deviceContext->VSSetConstantBuffers(BUFFER_SLOT_VIEW, 1, &cbuffer_view);
                 }
             }
 
@@ -1290,7 +1273,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             // Draw minimap
             {
                 int map_width = GetVHInPx(35.0f);
-                render_viewport.TopLeftX = g_main_window.width_px - map_width;
+                render_viewport.TopLeftX = g_window.size_px.x - map_width;
                 render_viewport.TopLeftY = 0;
                 render_viewport.Width = map_width;
                 render_viewport.Height = map_width;
@@ -1307,53 +1290,51 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 SetDefaultViewportDimensions();
 
                 Vec2f cursor01 = {0.0f, 0.0f};
-                char debug_buffer[256];
-                memset(debug_buffer, 0, sizeof(debug_buffer));
+                char* d_str;
 
-                sprintf(debug_buffer, "Frames: %llu\n", frame_counter);
+                d_str = GetCStrBuffer256();
+                sprintf(d_str, "Frames: %llu\n", g_window.frame_counter);
                 cursor01 = { 5.0f, GetVHInPx(debug_font_vh_size) };
-                cursor01 = DrawTextToScreen((char*)debug_buffer, cursor01, &g_debug_font);
-                memset(debug_buffer, 0, sizeof(debug_buffer));
+                cursor01 = DrawTextToScreen((char*)d_str, cursor01, &g_debug_font);
 
-                sprintf(debug_buffer, "Window width: %d, Window height: %d\n", (int)g_main_window.width_px, (int)g_main_window.height_px);
-                cursor01 = DrawTextToScreen((char*)debug_buffer, cursor01, &g_debug_font);
-                memset(debug_buffer, 0, sizeof(debug_buffer));
+                d_str = GetCStrBuffer256();
+                sprintf(d_str, "Window width: %d, Window height: %d\n", (int)g_window.size_px.x, (int)g_window.size_px.y);
+                cursor01 = DrawTextToScreen((char*)d_str, cursor01, &g_debug_font);
 
-                sprintf(debug_buffer, "Mouse x: %d, Mouse y: %d\n", (int)frame_input.mouse_x, (int)frame_input.mouse_y);
-                cursor01 = DrawTextToScreen((char*)debug_buffer, cursor01, &g_debug_font);
-                memset(debug_buffer, 0, sizeof(debug_buffer));
+                d_str = GetCStrBuffer256();
+                sprintf(d_str, "Mouse x: %d, Mouse y: %d\n", (int)frame_input.mouse_x, (int)frame_input.mouse_y);
+                cursor01 = DrawTextToScreen((char*)d_str, cursor01, &g_debug_font);
 
-                sprintf(debug_buffer, "Mouse tilemap x: %d, Mouse tilemap y: %d\n", frame_input.mouse_tilemap_x, frame_input.mouse_tilemap_y);
-                cursor01 = DrawTextToScreen((char*)debug_buffer, cursor01, &g_debug_font);
-                memset(debug_buffer, 0, sizeof(debug_buffer));
+                d_str = GetCStrBuffer256();
+                sprintf(d_str, "Mouse tilemap x: %d, Mouse tilemap y: %d\n", frame_input.mouse_tilemap_x, frame_input.mouse_tilemap_y);
+                cursor01 = DrawTextToScreen((char*)d_str, cursor01, &g_debug_font);
 
-                sprintf(debug_buffer, "Camera x: %.1f, Camera y: %.1f, Camera zoom: %.2f\n", viewport_camera.position.x, viewport_camera.position.y, viewport_camera.zoom);
-                cursor01 = DrawTextToScreen((char*)debug_buffer, cursor01, &g_debug_font);
-                memset(debug_buffer, 0, sizeof(debug_buffer));
+                d_str = GetCStrBuffer256();
+                sprintf(d_str, "Camera x: %.1f, Camera y: %.1f, Camera zoom: %.2f\n", viewport_camera.position.x, viewport_camera.position.y, viewport_camera.zoom);
+                cursor01 = DrawTextToScreen((char*)d_str, cursor01, &g_debug_font);
             }
 
             swapChain->Present(1, 0);
         }
 
-        frame_counter++;
+        g_window.frame_counter++;
     }
 
-    return main_window_message.wParam;
+    return window_message.wParam;
 }
 
 FontAtlasInfo LoadFontAtlas(char* filepath, float pixel_height) {
     FontAtlasInfo result = {};
 
-    int used_height = (int)pixel_height;
-
     stbtt_fontinfo font;
     size_t file_size;
-    wchar_t wide_buffer[256] = {};
-    StrToWideStr(filepath, wide_buffer, 256);
+    auto wide_buffer = GetWideStrBuffer256();
+    StrToWideStr(filepath, wide_buffer, STR_BUFFER_COUNT);
     unsigned char *fontBuffer = LoadFileToPtr(wide_buffer, &file_size);
 
     stbtt_InitFont(&font, fontBuffer, stbtt_GetFontOffsetForIndex(fontBuffer, 0));
 
+    int used_height = (int)pixel_height;
     float scale = stbtt_ScaleForPixelHeight(&font, (float)used_height);
     int ascent, descent, lineGap;
     stbtt_GetFontVMetrics(&font, &ascent, &descent, &lineGap);
@@ -1441,8 +1422,8 @@ FontAtlasInfo LoadFontAtlas(char* filepath, float pixel_height) {
     initData.pSysMem = font_atlas_buffer;
     initData.SysMemPitch = result.font_atlas_width; // The distance in bytes between the start of each line of the texture
         
-    ID3D11Texture2D* g_font_texture = nullptr;
-    HRESULT hr = id3d11_device->CreateTexture2D(&desc, &initData, &g_font_texture);
+    ID3D11Texture2D* font_texture = nullptr;
+    HRESULT hr = id3d11_device->CreateTexture2D(&desc, &initData, &font_texture);
     if (FAILED(hr)) {
         ErrorMessageAndBreak((char*)"CreateTexture2D font atlas failed!");
     }
@@ -1453,15 +1434,15 @@ FontAtlasInfo LoadFontAtlas(char* filepath, float pixel_height) {
     srvDesc.Texture2D.MostDetailedMip = 0;
     srvDesc.Texture2D.MipLevels = 1;
 
-    hr = id3d11_device->CreateShaderResourceView(g_font_texture, &srvDesc, &result.texture);
+    hr = id3d11_device->CreateShaderResourceView(font_texture, &srvDesc, &result.texture);
     if (FAILED(hr)) {
         ErrorMessageAndBreak((char*)"CreateShaderResourceView font atlas failed!");
     }
 
-    g_font_texture->Release();
+    font_texture->Release();
 
-    char buffer[256] = {};
-    sprintf(buffer, "Font loaded with texture atlas => width: %d, height: %d\n", result.font_atlas_width, result.font_atlas_height);
+    auto buffer = GetWideStrBuffer256();
+    wprintf(buffer, "Font loaded with texture atlas => width: %d, height: %d\n", result.font_atlas_width, result.font_atlas_height);
     DebugMessage(buffer);
 
     return result;
@@ -1478,7 +1459,7 @@ DirectX::XMMATRIX GetViewportViewMatrix() {
 DirectX::XMMATRIX GetViewportProjectionMatrix() {
     float nearPlane = 0.0f;
     float farPlane = 10.0f;
-    f32 aspect_ratio = (f32)g_main_window.width_px / (f32)g_main_window.height_px;
+    f32 aspect_ratio = (f32)g_window.size_px.x / (f32)g_window.size_px.y;
     float viewWidth = 2.0f * viewport_camera.zoom;
     float viewHeight = viewWidth / aspect_ratio;
 
@@ -1649,8 +1630,8 @@ BYTE* LoadWAWFile(wchar_t* filePath, WAVHeader* wavHeader) {
 }
 
 Vec2f ScreenPxToNDC(int x, int y) {
-    f32 ndcX = (2.0f * x) / (g_main_window.width_px - 1) - 1.0f;
-    f32 ndcY = 1.0f - (2.0f * y) / (g_main_window.height_px - 1);
+    f32 ndcX = (2.0f * x) / (g_window.size_px.x - 1) - 1.0f;
+    f32 ndcY = 1.0f - (2.0f * y) / (g_window.size_px.y - 1);
     Vec2f result = {
         .x = ndcX,
         .y = ndcY
@@ -1674,7 +1655,7 @@ Vec2f TilemapCoordsToIsometricScreenSpace(Vec2f tilemap_coord) {
 
 Vec2f GetMousePositionInWindow() {
     POINT mousePos;
-    if (GetCursorPos(&mousePos) && ScreenToClient(main_window_handle, &mousePos)) {
+    if (GetCursorPos(&mousePos) && ScreenToClient(g_window.handle, &mousePos)) {
         return Vec2f{(f32)mousePos.x, (f32)mousePos.y};
     }
     return Vec2f{-1.0f, -1.0f};
@@ -1701,7 +1682,7 @@ void DrawTilemapTile(ID3D11ShaderResourceView* texture, Vec2f coordinate) {
     ModelBufferType* model_data_ptr = (ModelBufferType*)mappedResource.pData;
     model_data_ptr->modelMatrix = modelBuffer.modelMatrix;
     deviceContext->Unmap(cbuffer_model, 0);
-    deviceContext->VSSetConstantBuffers(buffer_slot_model, 1, &cbuffer_model);
+    deviceContext->VSSetConstantBuffers(BUFFER_SLOT_MODEL, 1, &cbuffer_model);
 
     // Shader part
     deviceContext->IASetInputLayout(tilemap_tile_input_layout);
@@ -1751,11 +1732,11 @@ unsigned char* LoadFileToPtr(wchar_t* filename, size_t* get_file_size) {
 }
 
 f32 GetVWInPx(f32 vw) {
-    return (vw / 100.0f) * (f32)g_main_window.width_px;
+    return (vw / 100.0f) * (f32)g_window.size_px.x;
 }
 
 f32 GetVHInPx(f32 vh) {
-    return (vh / 100.0f) * (f32)g_main_window.height_px;
+    return (vh / 100.0f) * (f32)g_window.size_px.y;
 }
 
 void DrawRectangle(Vec2f top_left, Vec2f top_right, Vec2f bot_left, Vec2f bot_right, Vec3f color) {
@@ -1809,18 +1790,25 @@ void DrawDot(Vec2f ndc, Vec3f color) {
     UINT stride = sizeof(LineDotVertex);
     UINT offset = 0;
     deviceContext->IASetVertexBuffers(0, 1, &linedot_vertex_buffer, &stride, &offset);
-
-    deviceContext->GSSetShader(linedot_geometry_shader, nullptr, 0);
     deviceContext->Draw(1, 0);
-    deviceContext->GSSetShader(nullptr, nullptr, 0); 
 }
 
 void SetDefaultViewportDimensions() {
-    render_viewport.Width = (float)g_main_window.width_px;
-    render_viewport.Height = (float)g_main_window.height_px;
+    render_viewport.Width = (float)g_window.size_px.x;
+    render_viewport.Height = (float)g_window.size_px.y;
     render_viewport.TopLeftX = 0.0f;
     render_viewport.TopLeftY = 0.0f;
     render_viewport.MinDepth = 0.0f;
     render_viewport.MaxDepth = 1.0f;
     deviceContext->RSSetViewports(1, &render_viewport);
+}
+
+char* GetCStrBuffer256() {
+    memset(temp_cstr, 0, STR_BUFFER_COUNT);
+    return temp_cstr;
+}
+
+wchar_t* GetWideStrBuffer256() {
+    memset(temp_wstr, 0, STR_BUFFER_COUNT);
+    return temp_wstr;
 }
