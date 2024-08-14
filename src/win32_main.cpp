@@ -22,8 +22,9 @@
 #include "stb_truetype.h"
 
 const int MAX_TEXT_UI_VERTEX_COUNT = 1000;
-
 const int STR_BUFFER_COUNT = 256;
+const int WINDOW_DEFAULT_WIDTH = 1600;
+const int WINDOW_DEFAULT_HEIGHT = 1200;
 
 typedef unsigned char byte;
 
@@ -90,6 +91,34 @@ struct Window {
     i32 mousewheel_delta = 0;
     bool is_resizing;
 
+    Vec2f ScreenPxToNDC(Vec2i px) {
+        f32 ndcX = (2.0f * px.x) / (size_px.x - 1) - 1.0f;
+        f32 ndcY = 1.0f - (2.0f * px.y) / (size_px.y - 1);
+        Vec2f result = {
+            .x = ndcX,
+            .y = ndcY
+        };
+        return result;
+    }
+
+    Vec2i NDCToScreenPx(Vec2f ndc) {
+        int x = (size_px.x * (ndc.x + 1.0f)) * 0.5f;
+        int y = (size_px.y * (ndc.y + 1.0f)) * 0.5f;
+        Vec2i result = {
+            .x = x,
+            .y = y
+        };
+        return result;
+    }
+
+    Vec2f GetWindowMousePosition() {
+        POINT mousePos;
+        if (GetCursorPos(&mousePos) && ScreenToClient(handle, &mousePos)) {
+            return Vec2f{(f32)mousePos.x, (f32)mousePos.y};
+        }
+        return Vec2f{-1.0f, -1.0f};
+    }
+
     bool IsWindowFocused() {
         HWND foregroundWindow = GetForegroundWindow();
         return (foregroundWindow == handle);
@@ -129,12 +158,12 @@ struct GameKeys {
 };
 
 struct FrameInput {
-    f32 mouse_x;
-    f32 mouse_y;
-    i32 mouse_tilemap_x;
-    i32 mouse_tilemap_y;
-    bool mousewheel_up;
-    bool mousewheel_down;
+    f32 mouse_x = 0.0f;
+    f32 mouse_y = 0.0f;
+    i32 mouse_tilemap_x = 0;
+    i32 mouse_tilemap_y = 0;
+    bool mousewheel_up = false;
+    bool mousewheel_down = false;
     GameKeys keys = {};
 };
 
@@ -186,27 +215,55 @@ struct RectangleVertex {
 
 
 struct FontGlyphInfo {
-    i32 bitmap_width;
-    i32 bitmap_height;
-    i32 x_offset;
-    i32 y_offset;
-    f32 advance;
-    f32 uv_x0;
-    f32 uv_y0;
-    f32 uv_x1;
-    f32 uv_y1;
+    i32 bitmap_width = 0;
+    i32 bitmap_height = 0;
+    i32 x_offset = 0;
+    i32 y_offset = 0;
+    f32 advance = 0.0f;
+    f32 uv_x0 = 0.0f;
+    f32 uv_y0 = 0.0f;
+    f32 uv_x1 = 0.0f;
+    f32 uv_y1 = 0.0f;
     char character;
 };
 
 struct FontAtlasInfo {
     ID3D11ShaderResourceView* texture = nullptr;
-    i32 font_size_px;
-    f32 font_ascent;
-    f32 font_descent;
-    f32 font_linegap;
-    i32 font_atlas_width;
-    i32 font_atlas_height;
+    i32 font_size_px = 0;
+    i32 font_atlas_width = 0;
+    i32 font_atlas_height = 0;
+    f32 font_ascent = 0.0f;
+    f32 font_descent = 0.0f;
+    f32 font_linegap = 0.0f;
     FontGlyphInfo glyphs[96] = {};
+};
+
+struct CStrBuffer {
+    char* buffer = nullptr;
+    i32 size = 0;
+
+    char* GetCStrBuffer() {
+        memset(buffer, 0, size);
+        return buffer;
+    }
+
+    void MemsetBuffer(char value) {
+        memset(buffer, value, size);
+    }
+};
+
+struct WStrBuffer {
+    wchar_t* buffer = nullptr;
+    i32 size = 0;
+
+    wchar_t* GetWStrBuffer() {
+        memset(buffer, 0, size);
+        return buffer;
+    }
+
+    void MemsetBuffer(wchar_t value) {
+        memset(buffer, value, size);
+    }
 };
 
 #pragma pack(1)
@@ -245,8 +302,6 @@ bool IsKeyPressed(int key);
 
 void WindowResizeEvent();
 
-Vec2f GetMousePositionInWindow();
-
 void StrToWideStr(char* str, wchar_t* wresult, int str_count);
 
 Vec2f TilemapCoordsToIsometricScreenSpace(Vec2f tilemap_coord);
@@ -259,14 +314,9 @@ f32 GetTextWidthPx(char* text, FontAtlasInfo* font_info);
 
 void LoadTextureFromFilepath(Texture* texture, char* filepath);
 
-Vec2f ScreenPxToNDC(int x, int y);
-
 Vec2f ScreenSpaceToTilemapCoords(Vec2f tilemap_coord);
 
 void LoadGlobalFonts();
-
-char* GetCStrBuffer256();
-wchar_t* GetWideStrBuffer256();
 
 void SetDefaultViewportDimensions();
 
@@ -274,6 +324,7 @@ void DrawDotOnScreen(Vec2f ndc, f32 size_px, Vec3f color);
 Vec2f DrawTextToScreen(char* text, Vec2f screen_pos, FontAtlasInfo* font_info);
 void DrawRectangleToScreen(Vec2f top_left, Vec2f top_right, Vec2f bot_left, Vec2f bot_right, Vec3f color);
 void DrawTilemapTile(ID3D11ShaderResourceView* texture, Vec2f coordinate);
+void DrawLineOnScreen(Vec2f ndc_start, Vec2f ndc_end, f32 size_px, Vec3f color);
 
 DirectX::XMMATRIX GetViewportProjectionMatrix();
 DirectX::XMMATRIX GetViewportViewMatrix();
@@ -285,8 +336,8 @@ void PlayMonoSound(Buffer audio_buffer);
 // ---------
 // Globals
 
-int map_width = 8;
-int map_height = 8;
+int map_width = 4;
+int map_height = 2;
 
 Buffer sound_buffer_1 = {};
 Buffer sound_buffer_2 = {};
@@ -319,6 +370,7 @@ D3D11_VIEWPORT render_viewport;
 
 ID3D11SamplerState* g_sampler;
 Texture test_texture_01 = {};
+Texture test_minimap_texture_01 = {};
 FLOAT clear_color[] = { 1.0f, 0.0f, 1.0f, 1.0f };
 
 ID3D11VertexShader* tilemap_tile_vertex_shader = nullptr;
@@ -336,8 +388,17 @@ ID3D11PixelShader* rectangle_pixel_shader = nullptr;
 ID3D11Buffer* rectangle_vertex_buffer = nullptr;
 ID3D11InputLayout* rectangle_input_layout = nullptr;
 
-char temp_cstr[STR_BUFFER_COUNT] = {};
-wchar_t temp_wstr[STR_BUFFER_COUNT] = {};
+char cstr_buffer_256[STR_BUFFER_COUNT] = {};
+CStrBuffer temp_cstr = {
+    .buffer = cstr_buffer_256,
+    .size = STR_BUFFER_COUNT
+};
+
+wchar_t wstr_buffer_256[STR_BUFFER_COUNT] = {};
+WStrBuffer temp_wstr {
+    .buffer = wstr_buffer_256,
+    .size = STR_BUFFER_COUNT
+};
 
 const wchar_t* viewport_window_class_name = L"ViewportWindowClass";
 const wchar_t* window_class_name = L"MyWindowClass";
@@ -425,14 +486,14 @@ void ErrorMessageAndBreak(wchar_t* message) {
 }
 
 void ErrorMessageAndBreak(char* message) {
-    wchar_t* wide_message = GetWideStrBuffer256();
+    wchar_t* wide_message = temp_wstr.GetWStrBuffer();
     MultiByteToWideChar(CP_UTF8, 0, message, -1, wide_message, STR_BUFFER_COUNT);
     _ErrorMessageAndBreak(wide_message);
 }
 
 void DebugMessage(char* message) {
 #ifdef DEBUG
-    wchar_t* wide_message = GetWideStrBuffer256();
+    wchar_t* wide_message = temp_wstr.GetWStrBuffer();
     MultiByteToWideChar(CP_UTF8, 0, message, -1, wide_message, STR_BUFFER_COUNT);
     OutputDebugStringW(wide_message);
 #endif
@@ -495,7 +556,7 @@ void ResizeViewport(int width, int height) {
     backBuffer->Release();
     deviceContext->OMSetRenderTargets(1, &renderTargetView, nullptr);
 
-    auto buffer = GetWideStrBuffer256();
+    auto buffer = temp_wstr.GetWStrBuffer();
     wprintf(buffer, "Viewport resize event, x: %d, y: %d\n", width, height);
     DebugMessage(buffer);
 }
@@ -628,8 +689,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             style = WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX;
             exStyle = WS_EX_APPWINDOW | WS_EX_WINDOWEDGE;
 
-            g_window.size_px.x = 1200;
-            g_window.size_px.y = 800; 
+            g_window.size_px.x = WINDOW_DEFAULT_WIDTH;
+            g_window.size_px.y = WINDOW_DEFAULT_HEIGHT;
 
             // Center the window on the screen
             xPos = (GetSystemMetrics(SM_CXSCREEN) - g_window.size_px.x) / 2;
@@ -1016,7 +1077,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
 
     LoadTextureFromFilepath(&test_texture_01, (char*)"G:\\projects\\game\\finite-engine-dev\\resources\\images\\tiles\\grassland_tile_01.png");
-    
+    LoadTextureFromFilepath(&test_minimap_texture_01, (char*)"G:\\projects\\game\\finite-engine-dev\\resources\\images\\tiles\\grassland_tile_minimap.png");
+
     ShowWindow(g_window.handle, nCmdShow);
     UpdateWindow(g_window.handle);
 
@@ -1036,7 +1098,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 DispatchMessageW(&window_message);
             }
 
-            Vec2f mouse_pos = GetMousePositionInWindow();
+            Vec2f mouse_pos = g_window.GetWindowMousePosition();
             frame_input.mouse_x = mouse_pos.x;
             frame_input.mouse_y = mouse_pos.y;
 
@@ -1212,6 +1274,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
             DrawDotOnScreen({0.0f, 0.0f}, 4.0f, {1.0f, 1.0f, 1.0f});
 
+            DrawLineOnScreen({0.25f, 0.25f}, {-0.25f, -0.25f}, 2.0f, {1.0f, 0.0f, 1.0f});
+
             // --------------
             // Draw minimap
             {
@@ -1233,26 +1297,24 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 SetDefaultViewportDimensions();
 
                 Vec2f cursor01 = {0.0f, 0.0f};
-                char* d_str;
-
-                d_str = GetCStrBuffer256();
+                char* d_str = temp_cstr.GetCStrBuffer();
                 sprintf(d_str, "Frames: %llu\n", g_window.frame_counter);
                 cursor01 = { 5.0f, g_window.GetVHInPx(debug_font_vh_size) };
                 cursor01 = DrawTextToScreen((char*)d_str, cursor01, &g_debug_font);
 
-                d_str = GetCStrBuffer256();
+                temp_cstr.MemsetBuffer(0);
                 sprintf(d_str, "Window width: %d, Window height: %d\n", (int)g_window.size_px.x, (int)g_window.size_px.y);
                 cursor01 = DrawTextToScreen((char*)d_str, cursor01, &g_debug_font);
 
-                d_str = GetCStrBuffer256();
+                temp_cstr.MemsetBuffer(0);
                 sprintf(d_str, "Mouse x: %d, Mouse y: %d\n", (int)frame_input.mouse_x, (int)frame_input.mouse_y);
                 cursor01 = DrawTextToScreen((char*)d_str, cursor01, &g_debug_font);
 
-                d_str = GetCStrBuffer256();
+                temp_cstr.MemsetBuffer(0);
                 sprintf(d_str, "Mouse tilemap x: %d, Mouse tilemap y: %d\n", frame_input.mouse_tilemap_x, frame_input.mouse_tilemap_y);
                 cursor01 = DrawTextToScreen((char*)d_str, cursor01, &g_debug_font);
 
-                d_str = GetCStrBuffer256();
+                temp_cstr.MemsetBuffer(0);
                 sprintf(d_str, "Camera x: %.1f, Camera y: %.1f, Camera zoom: %.2f\n", viewport_camera.position.x, viewport_camera.position.y, viewport_camera.zoom);
                 cursor01 = DrawTextToScreen((char*)d_str, cursor01, &g_debug_font);
             }
@@ -1271,7 +1333,7 @@ FontAtlasInfo LoadFontAtlas(char* filepath, float pixel_height) {
 
     stbtt_fontinfo font;
     size_t file_size;
-    auto wide_buffer = GetWideStrBuffer256();
+    auto wide_buffer = temp_wstr.GetWStrBuffer();
     StrToWideStr(filepath, wide_buffer, STR_BUFFER_COUNT);
     unsigned char *fontBuffer = LoadFileToPtr(wide_buffer, &file_size);
 
@@ -1384,7 +1446,7 @@ FontAtlasInfo LoadFontAtlas(char* filepath, float pixel_height) {
 
     font_texture->Release();
 
-    auto buffer = GetWideStrBuffer256();
+    auto buffer = temp_wstr.GetWStrBuffer();
     wprintf(buffer, "Font loaded with texture atlas => width: %d, height: %d\n", result.font_atlas_width, result.font_atlas_height);
     DebugMessage(buffer);
 
@@ -1489,10 +1551,10 @@ Vec2f DrawTextToScreen(char* text, Vec2f screen_pos, FontAtlasInfo* font_info) {
         i32 px_y0 = cursor.y - glyph.y_offset;
         i32 px_y1 = px_y0 + glyph.bitmap_height;
 
-        auto top_left = ScreenPxToNDC(px_x0, px_y0);
-        auto top_right = ScreenPxToNDC(px_x1, px_y0);
-        auto bot_left = ScreenPxToNDC(px_x0, px_y1);
-        auto bot_right = ScreenPxToNDC(px_x1, px_y1);
+        auto top_left = g_window.ScreenPxToNDC({px_x0, px_y0});
+        auto top_right = g_window.ScreenPxToNDC({px_x1, px_y0});
+        auto bot_left = g_window.ScreenPxToNDC({px_x0, px_y1});
+        auto bot_right = g_window.ScreenPxToNDC({px_x1, px_y1});
 
         TextUiVertex vertices[] = {
             { DirectX::XMFLOAT4(top_left.x, top_left.y, 1.0f, 1.0f), DirectX::XMFLOAT2(glyph.uv_x0, glyph.uv_y0) },  // Top-left
@@ -1570,37 +1632,19 @@ BYTE* LoadWAWFile(wchar_t* filePath, WAVHeader* wavHeader) {
     return audioData;
 }
 
-Vec2f ScreenPxToNDC(int x, int y) {
-    f32 ndcX = (2.0f * x) / (g_window.size_px.x - 1) - 1.0f;
-    f32 ndcY = 1.0f - (2.0f * y) / (g_window.size_px.y - 1);
-    Vec2f result = {
-        .x = ndcX,
-        .y = ndcY
-    };
-    return result;
-}
-
 Vec2f ScreenSpaceToTilemapCoords(Vec2f screen_coord) {
-    float y_tile = (screen_coord.x + 2.0f * screen_coord.y) / 2.0f;
-    float x_tile = (2.0f * screen_coord.y - screen_coord.x) / 2.0f;
+    float x_tile = (screen_coord.x + 2.0f * screen_coord.y) / 2.0f;
+    float y_tile = (2.0f * screen_coord.y - screen_coord.x) / 2.0f;
     Vec2f result = {x_tile, y_tile};
     return result;
 }
 
 Vec2f TilemapCoordsToIsometricScreenSpace(Vec2f tilemap_coord) {
     const float y_offset = 0.5f; // So that 0,0 coord is the bottom corner of tile
-    float x = (tilemap_coord.x * (-1.0f)) + (tilemap_coord.y * (1.0f));
-    float y = (tilemap_coord.x * (0.5f))  + (tilemap_coord.y * (0.5f)) + y_offset;
+    float x = (tilemap_coord.y * (-1.0f)) + (tilemap_coord.x * (1.0f));
+    float y = (tilemap_coord.y * (0.5f))  + (tilemap_coord.x * (0.5f)) + y_offset;
     Vec2f result = {x, y};
     return result;
-}
-
-Vec2f GetMousePositionInWindow() {
-    POINT mousePos;
-    if (GetCursorPos(&mousePos) && ScreenToClient(g_window.handle, &mousePos)) {
-        return Vec2f{(f32)mousePos.x, (f32)mousePos.y};
-    }
-    return Vec2f{-1.0f, -1.0f};
 }
 
 void DrawTilemapTile(ID3D11ShaderResourceView* texture, Vec2f coordinate) {
@@ -1709,6 +1753,33 @@ void DrawDotOnScreen(Vec2f ndc, f32 size_px, Vec3f color) {
     DrawRectangleToScreen({-dot_w, dot_h}, {dot_w, dot_h}, {-dot_w, -dot_h}, {dot_w, -dot_h}, {color.x, color.y, color.z});
 }
 
+void DrawLineOnScreen(Vec2f ndc_start, Vec2f ndc_end, f32 size_px, Vec3f color) {
+    Vec2i start_px = g_window.NDCToScreenPx(ndc_start);
+    Vec2i end_px = g_window.NDCToScreenPx(ndc_end);
+
+    Vec2i line_vec = {start_px.x - end_px.x, start_px.y - end_px.y};
+    Vec2i perpendicular = {-line_vec.y, line_vec.x};
+
+    DirectX::XMVECTOR perpVec = DirectX::XMVectorSet(perpendicular.x, perpendicular.y, 0.0f, 0.0f);
+    DirectX::XMVECTOR unit_perp_dx = DirectX::XMVector2Normalize(perpVec);
+    unit_perp_dx = DirectX::XMVectorScale(unit_perp_dx, size_px);
+
+    const f32 ceiling_offset = size_px < 2.0f ? 1.0f : 0.5f;
+    Vec2i perp_vec = {(i32)DirectX::XMVectorGetX(unit_perp_dx) + ceiling_offset, (i32)DirectX::XMVectorGetY(unit_perp_dx) + ceiling_offset};
+
+    Vec2i line_start_1 = {start_px.x - perp_vec.x, start_px.y - perp_vec.y};
+    Vec2i line_start_2 = {start_px.x + perp_vec.x, start_px.y + perp_vec.y};
+    Vec2i line_end_1 = {end_px.x - perp_vec.x, end_px.y - perp_vec.y};
+    Vec2i line_end_2 = {end_px.x + perp_vec.x, end_px.y + perp_vec.y};
+
+    auto s1 = g_window.ScreenPxToNDC(line_start_1);
+    auto s2 = g_window.ScreenPxToNDC(line_start_2);
+    auto e1 = g_window.ScreenPxToNDC(line_end_1);
+    auto e2 = g_window.ScreenPxToNDC(line_end_2);
+
+    DrawRectangleToScreen(s1, s2, e1, e2, {color.x, color.y, color.z});
+}
+
 void SetDefaultViewportDimensions() {
     render_viewport.Width = (float)g_window.size_px.x;
     render_viewport.Height = (float)g_window.size_px.y;
@@ -1717,14 +1788,4 @@ void SetDefaultViewportDimensions() {
     render_viewport.MinDepth = 0.0f;
     render_viewport.MaxDepth = 1.0f;
     deviceContext->RSSetViewports(1, &render_viewport);
-}
-
-char* GetCStrBuffer256() {
-    memset(temp_cstr, 0, STR_BUFFER_COUNT);
-    return temp_cstr;
-}
-
-wchar_t* GetWideStrBuffer256() {
-    memset(temp_wstr, 0, STR_BUFFER_COUNT);
-    return temp_wstr;
 }
