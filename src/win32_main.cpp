@@ -89,6 +89,27 @@ struct Window {
     f32 frame_delta = 0.0f;
     i32 mousewheel_delta = 0;
     bool is_resizing;
+
+    bool IsWindowFocused() {
+        HWND foregroundWindow = GetForegroundWindow();
+        return (foregroundWindow == handle);
+    }
+
+    f32 GetVWInPx(f32 vw) {
+        return (vw / 100.0f) * (f32)size_px.x;
+    }
+
+    f32 GetVHInPx(f32 vh) {
+        return (vh / 100.0f) * (f32)size_px.y;
+    }
+
+    f32 GetPxInVW(f32 px) {
+        return px / (f32)size_px.x;
+    }
+
+    f32 GetPxInVH(f32 px) {
+        return px / (f32)size_px.y;
+    }
 };
 
 struct KeyInputState {
@@ -220,11 +241,11 @@ void ErrorMessageAndBreak(char* message);
 void DebugMessage(wchar_t* message);
 void DebugMessage(char* message);
 
-void LoadTextureFromFilepath(Texture* texture, char* filepath);
-
 bool IsKeyPressed(int key);
 
-bool IsWindowFocused(HWND window_handle);
+void WindowResizeEvent();
+
+Vec2f GetMousePositionInWindow();
 
 void StrToWideStr(char* str, wchar_t* wresult, int str_count);
 
@@ -232,37 +253,30 @@ Vec2f TilemapCoordsToIsometricScreenSpace(Vec2f tilemap_coord);
 
 unsigned char* LoadFileToPtr(wchar_t* filename, size_t* get_file_size);
 
-Vec2f ScreenPxToNDC(int x, int y);
+FontAtlasInfo LoadFontAtlas(char* filepath, float pixel_height);
 
 f32 GetTextWidthPx(char* text, FontAtlasInfo* font_info);
 
-FontAtlasInfo LoadFontAtlas(char* filepath, float pixel_height);
+void LoadTextureFromFilepath(Texture* texture, char* filepath);
 
-f32 GetVWInPx(f32 vw);
-f32 GetVHInPx(f32 vh);
-f32 GetPxInVW(f32 px);
-f32 GetPxInVH(f32 px);
+Vec2f ScreenPxToNDC(int x, int y);
+
+Vec2f ScreenSpaceToTilemapCoords(Vec2f tilemap_coord);
 
 void LoadGlobalFonts();
 
 char* GetCStrBuffer256();
 wchar_t* GetWideStrBuffer256();
 
-void WindowResizeEvent();
-
-Vec2f GetMousePositionInWindow();
-
 void SetDefaultViewportDimensions();
 
 void DrawDotOnScreen(Vec2f ndc, f32 size_px, Vec3f color);
 Vec2f DrawTextToScreen(char* text, Vec2f screen_pos, FontAtlasInfo* font_info);
-void DrawRectangle(Vec2f top_left, Vec2f top_right, Vec2f bot_left, Vec2f bot_right, Vec3f color);
+void DrawRectangleToScreen(Vec2f top_left, Vec2f top_right, Vec2f bot_left, Vec2f bot_right, Vec3f color);
 void DrawTilemapTile(ID3D11ShaderResourceView* texture, Vec2f coordinate);
 
 DirectX::XMMATRIX GetViewportProjectionMatrix();
 DirectX::XMMATRIX GetViewportViewMatrix();
-
-Vec2f ScreenSpaceToTilemapCoords(Vec2f tilemap_coord);
 
 BYTE* LoadWAWFile(wchar_t* filePath, WAVHeader* wavHeader);
 
@@ -338,7 +352,7 @@ Camera2D viewport_camera = {
 // Function implementations
 
 void LoadGlobalFonts() {
-    float debug_font_size = GetVHInPx(debug_font_vh_size);
+    float debug_font_size = g_window.GetVHInPx(debug_font_vh_size);
     g_debug_font = LoadFontAtlas((char*)"G:\\projects\\game\\finite-engine-dev\\resources\\fonts\\Roboto-Light.ttf", debug_font_size);
 }
 
@@ -414,11 +428,6 @@ void ErrorMessageAndBreak(char* message) {
     wchar_t* wide_message = GetWideStrBuffer256();
     MultiByteToWideChar(CP_UTF8, 0, message, -1, wide_message, STR_BUFFER_COUNT);
     _ErrorMessageAndBreak(wide_message);
-}
-
-bool IsWindowFocused(HWND window_handle) {
-    HWND foregroundWindow = GetForegroundWindow();
-    return (foregroundWindow == window_handle);
 }
 
 void DebugMessage(char* message) {
@@ -1031,7 +1040,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             frame_input.mouse_x = mouse_pos.x;
             frame_input.mouse_y = mouse_pos.y;
 
-            if (IsWindowFocused(g_window.handle)) {
+            if (g_window.IsWindowFocused()) {
                 int keys_struct_size = sizeof(GameKeys);
                 int keys_size = sizeof(KeyInputState);
                 int keys_count = keys_struct_size / keys_size;
@@ -1188,7 +1197,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
             // -----------------
             // Draw background
-            DrawRectangle({-1.0f, 1.0f}, {1.0f, 1.0f}, {-1.0f, -1.0f}, {1.0f, -1.0f}, {0.0f, 0.0f, 0.0f});
+            DrawRectangleToScreen({-1.0f, 1.0f}, {1.0f, 1.0f}, {-1.0f, -1.0f}, {1.0f, -1.0f}, {0.0f, 0.0f, 0.0f});
 
             // ---------------
             // Draw tilemaps
@@ -1206,7 +1215,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             // --------------
             // Draw minimap
             {
-                int map_width = GetVHInPx(35.0f);
+                int map_width = g_window.GetVHInPx(35.0f);
                 render_viewport.TopLeftX = g_window.size_px.x - map_width;
                 render_viewport.TopLeftY = 0;
                 render_viewport.Width = map_width;
@@ -1215,7 +1224,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 render_viewport.MaxDepth = 1.0f;
                 deviceContext->RSSetViewports(1, &render_viewport);
 
-                DrawRectangle({-1.0f, 1.0f}, {1.0f, 1.0f}, {-1.0f, -1.0f}, {1.0f, -1.0f}, {0.05f, 0.05f, 0.05f});
+                DrawRectangleToScreen({-1.0f, 1.0f}, {1.0f, 1.0f}, {-1.0f, -1.0f}, {1.0f, -1.0f}, {0.05f, 0.05f, 0.05f});
             }
 
             // ---------------
@@ -1228,7 +1237,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
                 d_str = GetCStrBuffer256();
                 sprintf(d_str, "Frames: %llu\n", g_window.frame_counter);
-                cursor01 = { 5.0f, GetVHInPx(debug_font_vh_size) };
+                cursor01 = { 5.0f, g_window.GetVHInPx(debug_font_vh_size) };
                 cursor01 = DrawTextToScreen((char*)d_str, cursor01, &g_debug_font);
 
                 d_str = GetCStrBuffer256();
@@ -1436,7 +1445,6 @@ f32 GetTextWidthPx(char* text, FontAtlasInfo* font_info) {
 
     for (char* p = (char*)text; *p != '\0'; p++) {
         char c = *p;
-
         if (c == '\n') {
             if (longest < width) {
                 longest = width;
@@ -1451,7 +1459,6 @@ f32 GetTextWidthPx(char* text, FontAtlasInfo* font_info) {
     if (longest < width) {
         longest = width;
     }
-
     return longest;
 }
 
@@ -1666,23 +1673,7 @@ unsigned char* LoadFileToPtr(wchar_t* filename, size_t* get_file_size) {
     return buffer;
 }
 
-f32 GetVWInPx(f32 vw) {
-    return (vw / 100.0f) * (f32)g_window.size_px.x;
-}
-
-f32 GetVHInPx(f32 vh) {
-    return (vh / 100.0f) * (f32)g_window.size_px.y;
-}
-
-f32 GetPxInVW(f32 px) {
-    return px / (f32)g_window.size_px.x;
-}
-
-f32 GetPxInVH(f32 px) {
-    return px / (f32)g_window.size_px.y;
-}
-
-void DrawRectangle(Vec2f top_left, Vec2f top_right, Vec2f bot_left, Vec2f bot_right, Vec3f color) {
+void DrawRectangleToScreen(Vec2f top_left, Vec2f top_right, Vec2f bot_left, Vec2f bot_right, Vec3f color) {
     RectangleVertex vertices[] = {
         { DirectX::XMFLOAT4(top_left.x, top_left.y, 1.0f, 1.0f), DirectX::XMFLOAT4(color.x, color.y, color.z, 1.0f) },  // Top-left
         { DirectX::XMFLOAT4(top_right.x, top_right.y, 1.0f, 1.0f), DirectX::XMFLOAT4(color.x, color.y, color.z, 1.0f) },   // Top-right
@@ -1713,9 +1704,9 @@ void DrawRectangle(Vec2f top_left, Vec2f top_right, Vec2f bot_left, Vec2f bot_ri
 }
 
 void DrawDotOnScreen(Vec2f ndc, f32 size_px, Vec3f color) {
-    f32 dot_w = GetPxInVW(size_px / 2);
-    f32 dot_h = GetPxInVH(size_px / 2);
-    DrawRectangle({-dot_w, dot_h}, {dot_w, dot_h}, {-dot_w, -dot_h}, {dot_w, -dot_h}, {color.x, color.y, color.z});
+    f32 dot_w = g_window.GetPxInVW(size_px / 2);
+    f32 dot_h = g_window.GetPxInVH(size_px / 2);
+    DrawRectangleToScreen({-dot_w, dot_h}, {dot_w, dot_h}, {-dot_w, -dot_h}, {dot_w, -dot_h}, {color.x, color.y, color.z});
 }
 
 void SetDefaultViewportDimensions() {
