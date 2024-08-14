@@ -163,10 +163,6 @@ struct RectangleVertex {
     DirectX::XMFLOAT4 color;
 };
 
-struct LineDotVertex {
-    DirectX::XMFLOAT4 position;
-    DirectX::XMFLOAT4 color;
-};
 
 struct FontGlyphInfo {
     i32 bitmap_width;
@@ -244,6 +240,8 @@ FontAtlasInfo LoadFontAtlas(char* filepath, float pixel_height);
 
 f32 GetVWInPx(f32 vw);
 f32 GetVHInPx(f32 vh);
+f32 GetPxInVW(f32 px);
+f32 GetPxInVH(f32 px);
 
 void LoadGlobalFonts();
 
@@ -256,7 +254,7 @@ Vec2f GetMousePositionInWindow();
 
 void SetDefaultViewportDimensions();
 
-void DrawDot(Vec2f ndc, Vec3f color);
+void DrawDotOnScreen(Vec2f ndc, f32 size_px, Vec3f color);
 Vec2f DrawTextToScreen(char* text, Vec2f screen_pos, FontAtlasInfo* font_info);
 void DrawRectangle(Vec2f top_left, Vec2f top_right, Vec2f bot_left, Vec2f bot_right, Vec3f color);
 void DrawTilemapTile(ID3D11ShaderResourceView* texture, Vec2f coordinate);
@@ -323,11 +321,6 @@ ID3D11VertexShader* rectangle_vertex_shader = nullptr;
 ID3D11PixelShader* rectangle_pixel_shader = nullptr;
 ID3D11Buffer* rectangle_vertex_buffer = nullptr;
 ID3D11InputLayout* rectangle_input_layout = nullptr;
-
-ID3D11VertexShader* linedot_vertex_shader = nullptr;
-ID3D11PixelShader* linedot_pixel_shader = nullptr;
-ID3D11Buffer* linedot_vertex_buffer = nullptr;
-ID3D11InputLayout* linedot_input_layout = nullptr;
 
 char temp_cstr[STR_BUFFER_COUNT] = {};
 wchar_t temp_wstr[STR_BUFFER_COUNT] = {};
@@ -849,65 +842,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
 
     // --------------------------
-    // Create linedot shader
-    {
-        HRESULT hr;
-        ID3DBlob* vsBlob = nullptr;
-        ID3DBlob* psBlob = nullptr;
-        ID3DBlob* error_blob = nullptr;
-
-        hr = D3DCompileFromFile(
-            L"G:\\projects\\game\\finite-engine-dev\\resources\\shaders\\linedot.hlsl",
-            nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
-            "VSMain", "vs_5_0", 0, 0, &vsBlob, &error_blob);
-        CheckShaderCompileError(hr, error_blob);
-
-        hr = D3DCompileFromFile(
-            L"G:\\projects\\game\\finite-engine-dev\\resources\\shaders\\linedot.hlsl",
-            nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
-            "PSMain", "ps_5_0", 0, 0, &psBlob, &error_blob);
-        CheckShaderCompileError(hr, error_blob);
-
-        hr = id3d11_device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &linedot_vertex_shader);
-        if (FAILED(hr)) {
-            ErrorMessageAndBreak((char*)"CreateVertexShader failed!");
-        }
-
-        hr = id3d11_device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &linedot_pixel_shader);
-        if (FAILED(hr)) {
-            ErrorMessageAndBreak((char*)"CreatePixelShader failed!");
-        }
-
-        D3D11_INPUT_ELEMENT_DESC layout[] = {
-            { "POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-            { "COLOR", 0,    DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        };
-
-        hr = id3d11_device->CreateInputLayout(layout, ARRAYSIZE(layout), vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &linedot_input_layout);
-        if (FAILED(hr)) {
-            ErrorMessageAndBreak((char*)"CreateInputLayout failed!");
-        }
-
-        vsBlob->Release();
-        psBlob->Release();
-
-        // -----------------------
-        // Create dynamic buffer
-        {
-            D3D11_BUFFER_DESC vertexBufferDesc = {};
-            vertexBufferDesc.Usage = D3D11_USAGE_DYNAMIC;
-            vertexBufferDesc.ByteWidth = sizeof(LineDotVertex) * MAX_TEXT_UI_VERTEX_COUNT;
-            vertexBufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-            vertexBufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-
-            hr = id3d11_device->CreateBuffer(&vertexBufferDesc, nullptr, &linedot_vertex_buffer);
-            if (FAILED(hr)) {
-                ErrorMessageAndBreak((char*)"CreateBuffer for linedot_vertex_buffer dynamic vertex buffer failed!");
-            }
-        }
-    }
-
-    // --------------------------
     // Create tilemap shader
     {
         HRESULT hr;
@@ -1267,7 +1201,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 }
             }
 
-            DrawDot({0.0f, 0.0f}, {1.0f, 1.0f, 1.0f});
+            DrawDotOnScreen({0.0f, 0.0f}, 4.0f, {1.0f, 1.0f, 1.0f});
 
             // --------------
             // Draw minimap
@@ -1647,8 +1581,9 @@ Vec2f ScreenSpaceToTilemapCoords(Vec2f screen_coord) {
 }
 
 Vec2f TilemapCoordsToIsometricScreenSpace(Vec2f tilemap_coord) {
+    const float y_offset = 0.5f; // So that 0,0 coord is the bottom corner of tile
     float x = (tilemap_coord.x * (-1.0f)) + (tilemap_coord.y * (1.0f));
-    float y = (tilemap_coord.x * (0.5f)) + (tilemap_coord.y * (0.5f));
+    float y = (tilemap_coord.x * (0.5f))  + (tilemap_coord.y * (0.5f)) + y_offset;
     Vec2f result = {x, y};
     return result;
 }
@@ -1739,6 +1674,14 @@ f32 GetVHInPx(f32 vh) {
     return (vh / 100.0f) * (f32)g_window.size_px.y;
 }
 
+f32 GetPxInVW(f32 px) {
+    return px / (f32)g_window.size_px.x;
+}
+
+f32 GetPxInVH(f32 px) {
+    return px / (f32)g_window.size_px.y;
+}
+
 void DrawRectangle(Vec2f top_left, Vec2f top_right, Vec2f bot_left, Vec2f bot_right, Vec3f color) {
     RectangleVertex vertices[] = {
         { DirectX::XMFLOAT4(top_left.x, top_left.y, 1.0f, 1.0f), DirectX::XMFLOAT4(color.x, color.y, color.z, 1.0f) },  // Top-left
@@ -1769,28 +1712,10 @@ void DrawRectangle(Vec2f top_left, Vec2f top_right, Vec2f bot_left, Vec2f bot_ri
     deviceContext->Draw(6, 0);
 }
 
-void DrawDot(Vec2f ndc, Vec3f color) {
-    LineDotVertex vertices[] = {
-        { DirectX::XMFLOAT4(ndc.x, ndc.y, 1.0f, 1.0f), DirectX::XMFLOAT4(color.x, color.y, color.z, 1.0f) },
-    };
-
-    D3D11_MAPPED_SUBRESOURCE mappedResource;
-    HRESULT hr = deviceContext->Map(linedot_vertex_buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
-    if (FAILED(hr)) {
-        ErrorMessageAndBreak((char*)"Map for linedot dynamic vertex buffer failed!");
-    }
-
-    memcpy(mappedResource.pData, vertices, sizeof(LineDotVertex));
-    deviceContext->Unmap(linedot_vertex_buffer, 0);
-    deviceContext->IASetInputLayout(linedot_input_layout);
-    deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_POINTLIST);
-    deviceContext->VSSetShader(linedot_vertex_shader, nullptr, 0);
-    deviceContext->PSSetShader(linedot_pixel_shader, nullptr, 0);
-
-    UINT stride = sizeof(LineDotVertex);
-    UINT offset = 0;
-    deviceContext->IASetVertexBuffers(0, 1, &linedot_vertex_buffer, &stride, &offset);
-    deviceContext->Draw(1, 0);
+void DrawDotOnScreen(Vec2f ndc, f32 size_px, Vec3f color) {
+    f32 dot_w = GetPxInVW(size_px / 2);
+    f32 dot_h = GetPxInVH(size_px / 2);
+    DrawRectangle({-dot_w, dot_h}, {dot_w, dot_h}, {-dot_w, -dot_h}, {dot_w, -dot_h}, {color.x, color.y, color.z});
 }
 
 void SetDefaultViewportDimensions() {
