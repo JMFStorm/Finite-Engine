@@ -89,6 +89,7 @@ struct Window {
     u64 frame_counter = 0;
     f32 frame_delta = 0.0f;
     i32 mousewheel_delta = 0;
+    i32 frame_draw_calls = 0;
     bool is_resizing;
 
     Vec2f ScreenPxToNDC(Vec2i px) {
@@ -155,6 +156,9 @@ struct GameKeys {
     KeyInputState a = { (int)'A' };
     KeyInputState s = { (int)'S' };
     KeyInputState d = { (int)'D' };
+    KeyInputState _1 = { (int)'1' };
+    KeyInputState _2 = { (int)'2' };
+    KeyInputState _3 = { (int)'3' };
 };
 
 struct FrameInput {
@@ -238,6 +242,16 @@ struct FontAtlasInfo {
     FontGlyphInfo glyphs[96] = {};
 };
 
+struct Tile {
+    i32 type;
+};
+
+struct Tilemap {
+    i32 width = 0;
+    i32 height = 0;
+    Tile* tiles = nullptr;
+};
+
 struct CStrBuffer {
     char* buffer = nullptr;
     i32 size = 0;
@@ -302,6 +316,8 @@ bool IsKeyPressed(int key);
 
 void WindowResizeEvent();
 
+bool CursorOverTilemap();
+
 void StrToWideStr(char* str, wchar_t* wresult, int str_count);
 
 Vec2f TilemapCoordsToIsometricScreenSpace(Vec2f tilemap_coord);
@@ -317,6 +333,8 @@ void LoadTextureFromFilepath(Texture* texture, char* filepath);
 Vec2f ScreenSpaceToTilemapCoords(Vec2f tilemap_coord);
 
 void LoadGlobalFonts();
+
+Tile* GetCursorTilePtr();
 
 void SetDefaultViewportDimensions();
 
@@ -336,8 +354,16 @@ void PlayMonoSound(Buffer audio_buffer);
 // ---------
 // Globals
 
-int map_width = 4;
-int map_height = 2;
+const int tilemap_width = 40;
+const int tilemap_height = 40;
+
+Tile tilemap_data[tilemap_width * tilemap_height] = {0};
+
+Tilemap g_tilemap = {
+    .width = tilemap_width,
+    .height = tilemap_height,
+    .tiles = tilemap_data
+};
 
 Buffer sound_buffer_1 = {};
 Buffer sound_buffer_2 = {};
@@ -369,8 +395,11 @@ ID3D11RenderTargetView *renderTargetView;
 D3D11_VIEWPORT render_viewport;
 
 ID3D11SamplerState* g_sampler;
-Texture test_texture_01 = {};
-Texture test_minimap_texture_01 = {};
+Texture grass_tile = {};
+Texture sand_tile = {};
+Texture rock_tile = {};
+Texture selector_tile = {};
+Texture tile_grid = {};
 FLOAT clear_color[] = { 1.0f, 0.0f, 1.0f, 1.0f };
 
 ID3D11VertexShader* tilemap_tile_vertex_shader = nullptr;
@@ -1076,8 +1105,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         }
     }
 
-    LoadTextureFromFilepath(&test_texture_01, (char*)"G:\\projects\\game\\finite-engine-dev\\resources\\images\\tiles\\grassland_tile_01.png");
-    LoadTextureFromFilepath(&test_minimap_texture_01, (char*)"G:\\projects\\game\\finite-engine-dev\\resources\\images\\tiles\\grassland_tile_minimap.png");
+    LoadTextureFromFilepath(&grass_tile, (char*)"G:\\projects\\game\\finite-engine-dev\\resources\\images\\tiles\\grass_tile.png");
+    LoadTextureFromFilepath(&sand_tile, (char*)"G:\\projects\\game\\finite-engine-dev\\resources\\images\\tiles\\sand_tile.png");
+    LoadTextureFromFilepath(&rock_tile, (char*)"G:\\projects\\game\\finite-engine-dev\\resources\\images\\tiles\\rock_tile.png");
+    LoadTextureFromFilepath(&selector_tile, (char*)"G:\\projects\\game\\finite-engine-dev\\resources\\images\\tiles\\tile_selector.png");
+    LoadTextureFromFilepath(&tile_grid, (char*)"G:\\projects\\game\\finite-engine-dev\\resources\\images\\tiles\\tile_grid.png");
 
     ShowWindow(g_window.handle, nCmdShow);
     UpdateWindow(g_window.handle);
@@ -1086,7 +1118,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     // -----------
     // Game loop
-    MSG window_message;
+    MSG window_message = {};
     while (window_message.message != WM_QUIT) {
         // --------------
         // Handle input
@@ -1161,17 +1193,38 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 }
             }
 
+            f32 camera_speed = 15.0f;
+
             if (frame_input.keys.arrow_down.is_down) {
-                viewport_camera.position.y -= 5.0f * g_window.frame_delta;
+                viewport_camera.position.y -= camera_speed * g_window.frame_delta;
             }
             if (frame_input.keys.arrow_up.is_down) {
-                viewport_camera.position.y += 5.0f * g_window.frame_delta;
+                viewport_camera.position.y += camera_speed * g_window.frame_delta;
             }
             if (frame_input.keys.arrow_left.is_down) {
-                viewport_camera.position.x -= 5.0f * g_window.frame_delta;
+                viewport_camera.position.x -= camera_speed * g_window.frame_delta;
             }
             if (frame_input.keys.arrow_right.is_down) {
-                viewport_camera.position.x += 5.0f * g_window.frame_delta;
+                viewport_camera.position.x += camera_speed * g_window.frame_delta;
+            }
+
+            if (frame_input.keys._1.is_down) {
+                if (CursorOverTilemap()) {
+                    Tile* cursor_tile = GetCursorTilePtr();
+                    cursor_tile->type = 0;
+                }
+            }
+            if (frame_input.keys._2.is_down) {
+                if (CursorOverTilemap()) {
+                    Tile* cursor_tile = GetCursorTilePtr();
+                    cursor_tile->type = 1;
+                }
+            }
+            if (frame_input.keys._3.is_down) {
+                if (CursorOverTilemap()) {
+                    Tile* cursor_tile = GetCursorTilePtr();
+                    cursor_tile->type = 2;
+                }
             }
 
             // ----------------------------
@@ -1191,8 +1244,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 f32 my = DirectX::XMVectorGetY(worldPosition);
 
                 Vec2f tileCoord = ScreenSpaceToTilemapCoords(Vec2f{mx, my});
-                frame_input.mouse_tilemap_x = (int)tileCoord.x + 1;
-                frame_input.mouse_tilemap_y = (int)tileCoord.y + 1;
+                frame_input.mouse_tilemap_x = (int)tileCoord.x;
+                frame_input.mouse_tilemap_y = (int)tileCoord.y;
             }
         }
 
@@ -1210,9 +1263,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         // Render viewport frame
         {
             deviceContext->ClearRenderTargetView(renderTargetView, clear_color);
-
             SetDefaultViewportDimensions();
-            
             deviceContext->OMSetRenderTargets(1, &renderTargetView, nullptr);
 
             // -----------------
@@ -1264,37 +1315,46 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             // ---------------
             // Draw tilemaps
             {
-                for (int y = 0; y < map_height; y++) {
-                    for (int x = 0; x < map_width; x++) {
+                for (int y = 0; y < g_tilemap.height; y++) {
+                    for (int x = 0; x < g_tilemap.width; x++) {
                         Vec2f coordinate = {(f32)x, f32(y)};
-                        DrawTilemapTile(test_texture_01.resource_view, coordinate);
+                        Tile tile = tilemap_data[x + (y * g_tilemap.width)];
+                        Texture texture;
+                        if (tile.type == 0) {
+                            texture = grass_tile;
+                        }
+                        else if (tile.type == 1) {
+                            texture = sand_tile;
+                        }
+                        else if (tile.type == 2) {
+                            texture = rock_tile;
+                        }
+
+                        DrawTilemapTile(texture.resource_view, coordinate);
+                    }
+                }
+
+                 for (int y = 0; y < g_tilemap.height; y++) {
+                    for (int x = 0; x < g_tilemap.width; x++) {
+                        Vec2f coordinate = {(f32)x, f32(y)};
+                        DrawTilemapTile(tile_grid.resource_view, coordinate);
                     }
                 }
             }
 
-            DrawDotOnScreen({0.0f, 0.0f}, 4.0f, {1.0f, 1.0f, 1.0f});
-
-            DrawLineOnScreen({0.25f, 0.25f}, {-0.25f, -0.25f}, 2.0f, {1.0f, 0.0f, 1.0f});
-
-            // --------------
-            // Draw minimap
-            {
-                int map_width = g_window.GetVHInPx(35.0f);
-                render_viewport.TopLeftX = g_window.size_px.x - map_width;
-                render_viewport.TopLeftY = 0;
-                render_viewport.Width = map_width;
-                render_viewport.Height = map_width;
-                render_viewport.MinDepth = 0.0f;
-                render_viewport.MaxDepth = 1.0f;
-                deviceContext->RSSetViewports(1, &render_viewport);
-
-                DrawRectangleToScreen({-1.0f, 1.0f}, {1.0f, 1.0f}, {-1.0f, -1.0f}, {1.0f, -1.0f}, {0.05f, 0.05f, 0.05f});
+            if (CursorOverTilemap()) {
+                DrawTilemapTile(selector_tile.resource_view, {(f32)frame_input.mouse_tilemap_x, (f32)frame_input.mouse_tilemap_y});
             }
+
+            DrawLineOnScreen({-0.025f, 0.0f}, {0.025f, 0.0f}, 1.0f, {1.0f, 1.0f, 1.0f});
+            DrawLineOnScreen({0.0f, -0.025f}, {0.0f, 0.025f}, 1.0f, {1.0f, 1.0f, 1.0f});
 
             // ---------------
             // Display debug
             {
                 SetDefaultViewportDimensions();
+
+                DrawRectangleToScreen({-1.0f, 1.0f}, {-0.5f, 1.0f}, {-1.0f, 0.75}, {-0.5f, 0.75f}, {0.2f, 0.2f, 0.2f});
 
                 Vec2f cursor01 = {0.0f, 0.0f};
                 char* d_str = temp_cstr.GetCStrBuffer();
@@ -1317,12 +1377,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 temp_cstr.MemsetBuffer(0);
                 sprintf(d_str, "Camera x: %.1f, Camera y: %.1f, Camera zoom: %.2f\n", viewport_camera.position.x, viewport_camera.position.y, viewport_camera.zoom);
                 cursor01 = DrawTextToScreen((char*)d_str, cursor01, &g_debug_font);
+
+                temp_cstr.MemsetBuffer(0);
+                sprintf(d_str, "Draw calls: %d\n", g_window.frame_draw_calls);
+                cursor01 = DrawTextToScreen((char*)d_str, cursor01, &g_debug_font);
             }
 
             swapChain->Present(1, 0);
         }
 
         g_window.frame_counter++;
+        g_window.frame_draw_calls = 0;
     }
 
     return window_message.wParam;
@@ -1587,6 +1652,7 @@ Vec2f DrawTextToScreen(char* text, Vec2f screen_pos, FontAtlasInfo* font_info) {
         UINT offset = 0;
         deviceContext->IASetVertexBuffers(0, 1, &text_ui_vertex_buffer, &stride, &offset);
         deviceContext->Draw(6, 0);
+        g_window.frame_draw_calls++;
 
         cursor.x += glyph.advance;
     }
@@ -1684,6 +1750,7 @@ void DrawTilemapTile(ID3D11ShaderResourceView* texture, Vec2f coordinate) {
     UINT offset = 0;
     deviceContext->IASetVertexBuffers(0, 1, &tilemap_tile_vertex_buffer, &stride, &offset);
     deviceContext->Draw(6, 0);
+    g_window.frame_draw_calls++;
 }
 
 unsigned char* LoadFileToPtr(wchar_t* filename, size_t* get_file_size) {
@@ -1717,6 +1784,15 @@ unsigned char* LoadFileToPtr(wchar_t* filename, size_t* get_file_size) {
     return buffer;
 }
 
+bool CursorOverTilemap() {
+    if (0 <= frame_input.mouse_tilemap_x && 0 <= frame_input.mouse_tilemap_y) {
+        if (frame_input.mouse_tilemap_x < g_tilemap.width && frame_input.mouse_tilemap_y < g_tilemap.height) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void DrawRectangleToScreen(Vec2f top_left, Vec2f top_right, Vec2f bot_left, Vec2f bot_right, Vec3f color) {
     RectangleVertex vertices[] = {
         { DirectX::XMFLOAT4(top_left.x, top_left.y, 1.0f, 1.0f), DirectX::XMFLOAT4(color.x, color.y, color.z, 1.0f) },  // Top-left
@@ -1745,6 +1821,7 @@ void DrawRectangleToScreen(Vec2f top_left, Vec2f top_right, Vec2f bot_left, Vec2
     UINT offset = 0;
     deviceContext->IASetVertexBuffers(0, 1, &rectangle_vertex_buffer, &stride, &offset);
     deviceContext->Draw(6, 0);
+    g_window.frame_draw_calls++;
 }
 
 void DrawDotOnScreen(Vec2f ndc, f32 size_px, Vec3f color) {
@@ -1764,8 +1841,7 @@ void DrawLineOnScreen(Vec2f ndc_start, Vec2f ndc_end, f32 size_px, Vec3f color) 
     DirectX::XMVECTOR unit_perp_dx = DirectX::XMVector2Normalize(perpVec);
     unit_perp_dx = DirectX::XMVectorScale(unit_perp_dx, size_px);
 
-    const f32 ceiling_offset = size_px < 2.0f ? 1.0f : 0.5f;
-    Vec2i perp_vec = {(i32)DirectX::XMVectorGetX(unit_perp_dx) + ceiling_offset, (i32)DirectX::XMVectorGetY(unit_perp_dx) + ceiling_offset};
+    Vec2i perp_vec = {(i32)DirectX::XMVectorGetX(unit_perp_dx), (i32)DirectX::XMVectorGetY(unit_perp_dx) };
 
     Vec2i line_start_1 = {start_px.x - perp_vec.x, start_px.y - perp_vec.y};
     Vec2i line_start_2 = {start_px.x + perp_vec.x, start_px.y + perp_vec.y};
@@ -1778,6 +1854,12 @@ void DrawLineOnScreen(Vec2f ndc_start, Vec2f ndc_end, f32 size_px, Vec3f color) 
     auto e2 = g_window.ScreenPxToNDC(line_end_2);
 
     DrawRectangleToScreen(s1, s2, e1, e2, {color.x, color.y, color.z});
+}
+
+Tile* GetCursorTilePtr() {
+    int index = frame_input.mouse_tilemap_x + (g_tilemap.width * frame_input.mouse_tilemap_y); 
+    Tile* tile = &tilemap_data[index];
+    return tile;
 }
 
 void SetDefaultViewportDimensions() {
