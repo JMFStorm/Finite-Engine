@@ -21,7 +21,7 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
 
-const int MAX_TEXT_UI_VERTEX_COUNT = 1000;
+const int MAX_TEXT_UI_VERTEX_COUNT = 500 * 6;
 const int STR_BUFFER_COUNT = 256;
 const int WINDOW_DEFAULT_WIDTH = 1600;
 const int WINDOW_DEFAULT_HEIGHT = 1200;
@@ -176,16 +176,8 @@ struct Camera2D {
     f32 zoom;
 };
 
-struct ViewMatrixBufferType {
-    DirectX::XMMATRIX view_matrix;
-};
-
 struct ViewProjectionMatrixBufferType {
     DirectX::XMMATRIX view_projection_matrix;
-};
-
-struct ModelBufferType {
-    DirectX::XMMATRIX modelMatrix;
 };
 
 enum class ImageFileType {
@@ -202,7 +194,7 @@ struct Texture {
 };
 
 struct TilemapTileVertex {
-    DirectX::XMFLOAT3 position;
+    DirectX::XMFLOAT4 position;
     DirectX::XMFLOAT4 color;
     DirectX::XMFLOAT2 uv;
 };
@@ -216,7 +208,6 @@ struct RectangleVertex {
     DirectX::XMFLOAT4 position;
     DirectX::XMFLOAT4 color;
 };
-
 
 struct FontGlyphInfo {
     i32 bitmap_width = 0;
@@ -318,6 +309,9 @@ void WindowResizeEvent();
 
 bool CursorOverTilemap();
 
+void BufferRectangle2d(Vec2f offset);
+void DrawBufferedRectangle2ds(ID3D11ShaderResourceView* texture);
+
 void StrToWideStr(char* str, wchar_t* wresult, int str_count);
 
 Vec2f TilemapCoordsToIsometricScreenSpace(Vec2f tilemap_coord);
@@ -341,7 +335,7 @@ void SetDefaultViewportDimensions();
 void DrawDotOnScreen(Vec2f ndc, f32 size_px, Vec3f color);
 Vec2f DrawTextToScreen(char* text, Vec2f screen_pos, FontAtlasInfo* font_info);
 void DrawRectangleToScreen(Vec2f top_left, Vec2f top_right, Vec2f bot_left, Vec2f bot_right, Vec3f color);
-void DrawTilemapTile(ID3D11ShaderResourceView* texture, Vec2f coordinate);
+// void DrawTilemapTile(ID3D11ShaderResourceView* texture, Vec2f coordinate);
 void DrawLineOnScreen(Vec2f ndc_start, Vec2f ndc_end, f32 size_px, Vec3f color);
 
 DirectX::XMMATRIX GetViewportProjectionMatrix();
@@ -395,17 +389,9 @@ ID3D11RenderTargetView *renderTargetView;
 D3D11_VIEWPORT render_viewport;
 
 ID3D11SamplerState* g_sampler;
-Texture grass_tile = {};
-Texture sand_tile = {};
-Texture rock_tile = {};
-Texture selector_tile = {};
-Texture tile_grid = {};
+Texture tile_atlas_01 = {};
+Texture dude_01 = {};
 FLOAT clear_color[] = { 1.0f, 0.0f, 1.0f, 1.0f };
-
-ID3D11VertexShader* tilemap_tile_vertex_shader = nullptr;
-ID3D11PixelShader* tilemap_tile_pixel_shader = nullptr;
-ID3D11Buffer* tilemap_tile_vertex_buffer = nullptr;
-ID3D11InputLayout* tilemap_tile_input_layout = nullptr;
 
 ID3D11VertexShader* text_ui_vertex_shader = nullptr;
 ID3D11PixelShader* text_ui_pixel_shader = nullptr;
@@ -416,6 +402,12 @@ ID3D11VertexShader* rectangle_vertex_shader = nullptr;
 ID3D11PixelShader* rectangle_pixel_shader = nullptr;
 ID3D11Buffer* rectangle_vertex_buffer = nullptr;
 ID3D11InputLayout* rectangle_input_layout = nullptr;
+
+ID3D11VertexShader* rectangle_2d_vertex_shader = nullptr;
+ID3D11PixelShader* rectangle_2d_pixel_shader = nullptr;
+ID3D11Buffer* rectangle_2d_vertex_buffer = nullptr;
+ID3D11InputLayout* rectangle_2d_input_layout = nullptr;
+u64 buffered_rectangle_2d_vertex_count = 0;
 
 char cstr_buffer_256[STR_BUFFER_COUNT] = {};
 CStrBuffer temp_cstr = {
@@ -857,28 +849,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         if (FAILED(hresult)) {
             ErrorMessageAndBreak((char*)"CreateBuffer ViewProjectionMatrixBufferType failed!");
         }
-        
-        // Model matrix b1
-        D3D11_BUFFER_DESC modelBufferDesc = {};
-        modelBufferDesc.Usage = D3D11_USAGE_DYNAMIC;
-        modelBufferDesc.ByteWidth = sizeof(ModelBufferType);
-        modelBufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-        modelBufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-        hresult = id3d11_device->CreateBuffer(&modelBufferDesc, nullptr, &cbuffer_model);
-        if (FAILED(hresult)) {
-            ErrorMessageAndBreak((char*)"CreateBuffer ModelBufferType failed!");
-        }
-
-        // View matrix b2
-        D3D11_BUFFER_DESC viewMatrixBufferDesc = {};
-        viewMatrixBufferDesc.Usage = D3D11_USAGE_DYNAMIC;
-        viewMatrixBufferDesc.ByteWidth = sizeof(ViewMatrixBufferType);
-        viewMatrixBufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-        viewMatrixBufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-        hresult = id3d11_device->CreateBuffer(&viewMatrixBufferDesc, nullptr, &cbuffer_view);
-        if (FAILED(hresult)) {
-            ErrorMessageAndBreak((char*)"CreateBuffer ViewMatrixBufferType failed!");
-        }
     }
 
     // --------------------------
@@ -940,8 +910,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         }
     }
 
-    // --------------------------
-    // Create tilemap shader
+    // -----------------------------------------
+    // Create rectangle 2D shader (with batch)
     {
         HRESULT hr;
         ID3DBlob* vsBlob = nullptr;
@@ -949,34 +919,34 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         ID3DBlob* error_blob = nullptr;
 
         hr = D3DCompileFromFile(
-            L"G:\\projects\\game\\finite-engine-dev\\resources\\shaders\\tile.hlsl",
+            L"G:\\projects\\game\\finite-engine-dev\\resources\\shaders\\rectangle_2d.hlsl",
             nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
             "VSMain", "vs_5_0", 0, 0, &vsBlob, &error_blob);
         CheckShaderCompileError(hr, error_blob);
 
         hr = D3DCompileFromFile(
-            L"G:\\projects\\game\\finite-engine-dev\\resources\\shaders\\tile.hlsl",
+            L"G:\\projects\\game\\finite-engine-dev\\resources\\shaders\\rectangle_2d.hlsl",
             nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
             "PSMain", "ps_5_0", 0, 0, &psBlob, &error_blob);
         CheckShaderCompileError(hr, error_blob);
 
-        hr = id3d11_device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &tilemap_tile_vertex_shader);
+        hr = id3d11_device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &rectangle_2d_vertex_shader);
         if (FAILED(hr)) {
             ErrorMessageAndBreak((char*)"CreateVertexShader failed!");
         }
 
-        hr = id3d11_device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &tilemap_tile_pixel_shader);
+        hr = id3d11_device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &rectangle_2d_pixel_shader);
         if (FAILED(hr)) {
             ErrorMessageAndBreak((char*)"CreatePixelShader failed!");
         }
 
         D3D11_INPUT_ELEMENT_DESC layout[] = {
-            { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-            { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
             { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
         };
 
-        hr = id3d11_device->CreateInputLayout(layout, ARRAYSIZE(layout), vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &tilemap_tile_input_layout);
+        hr = id3d11_device->CreateInputLayout(layout, ARRAYSIZE(layout), vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &rectangle_2d_input_layout);
         if (FAILED(hr)) {
             ErrorMessageAndBreak((char*)"CreateInputLayout failed!");
         }
@@ -984,31 +954,18 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         vsBlob->Release();
         psBlob->Release();
 
-        // ------------------------------
-        // Create tilemap shader buffer
+        // -----------------------
+        // Create dynamic buffer
         {
-            TilemapTileVertex vertices[] = {
-                { DirectX::XMFLOAT3(-1.0f, 0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 0.0f) },  // Top-left
-                { DirectX::XMFLOAT3(1.0f, -0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 1.0f) },  // Bottom-right
-                { DirectX::XMFLOAT3(-1.0f, -0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 1.0f) }, // Bottom-left
+            D3D11_BUFFER_DESC vertexBufferDesc = {};
+            vertexBufferDesc.Usage = D3D11_USAGE_DYNAMIC;
+            vertexBufferDesc.ByteWidth = sizeof(RectangleVertex) * MAX_TEXT_UI_VERTEX_COUNT;
+            vertexBufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+            vertexBufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 
-                { DirectX::XMFLOAT3(-1.0f, 0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 0.0f) },  // Top-left
-                { DirectX::XMFLOAT3(1.0f, 0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 0.0f) },   // Top-right
-                { DirectX::XMFLOAT3(1.0f, -0.5f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 1.0f) }   // Bottom-right
-            };
-
-            D3D11_BUFFER_DESC bufferDesc = {};
-            bufferDesc.Usage = D3D11_USAGE_DEFAULT;
-            bufferDesc.ByteWidth = sizeof(vertices);
-            bufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-            bufferDesc.CPUAccessFlags = 0;
-
-            D3D11_SUBRESOURCE_DATA initData = {};
-            initData.pSysMem = vertices;
-
-            hr = id3d11_device->CreateBuffer(&bufferDesc, &initData, &tilemap_tile_vertex_buffer);
+            hr = id3d11_device->CreateBuffer(&vertexBufferDesc, nullptr, &rectangle_2d_vertex_buffer);
             if (FAILED(hr)) {
-                ErrorMessageAndBreak((char*)"CreateBuffer (vertex) failed!");
+                ErrorMessageAndBreak((char*)"CreateBuffer for rectangle_vertex_buffer dynamic vertex buffer failed!");
             }
         }
     }
@@ -1105,11 +1062,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         }
     }
 
-    LoadTextureFromFilepath(&grass_tile, (char*)"G:\\projects\\game\\finite-engine-dev\\resources\\images\\tiles\\grass_tile.png");
-    LoadTextureFromFilepath(&sand_tile, (char*)"G:\\projects\\game\\finite-engine-dev\\resources\\images\\tiles\\sand_tile.png");
-    LoadTextureFromFilepath(&rock_tile, (char*)"G:\\projects\\game\\finite-engine-dev\\resources\\images\\tiles\\rock_tile.png");
-    LoadTextureFromFilepath(&selector_tile, (char*)"G:\\projects\\game\\finite-engine-dev\\resources\\images\\tiles\\tile_selector.png");
-    LoadTextureFromFilepath(&tile_grid, (char*)"G:\\projects\\game\\finite-engine-dev\\resources\\images\\tiles\\tile_grid.png");
+    LoadTextureFromFilepath(&tile_atlas_01, (char*)"G:\\projects\\game\\finite-engine-dev\\resources\\images\\tiles_01.png");
+    LoadTextureFromFilepath(&dude_01, (char*)"G:\\projects\\game\\finite-engine-dev\\resources\\images\\dude_01.png");
 
     ShowWindow(g_window.handle, nCmdShow);
     UpdateWindow(g_window.handle);
@@ -1291,21 +1245,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                     deviceContext->Unmap(cbuffer_view_projection, 0);
                     deviceContext->VSSetConstantBuffers(BUFFER_SLOT_VIEW_PROJECTION, 1, &cbuffer_view_projection);
                 }
-
-                // --------------------
-                // Update view matrix
-                {
-                    D3D11_MAPPED_SUBRESOURCE mappedResource;
-                    HRESULT hr = deviceContext->Map(cbuffer_view, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
-                    if (FAILED(hr)) {
-                        ErrorMessageAndBreak((char*)"deviceContext->Map() ViewMatrixBufferType failed!");
-                    }
-
-                    ViewMatrixBufferType* view_data_ptr = (ViewMatrixBufferType*)mappedResource.pData;
-                    view_data_ptr->view_matrix = viewMatrix;
-                    deviceContext->Unmap(cbuffer_view, 0);
-                    deviceContext->VSSetConstantBuffers(BUFFER_SLOT_VIEW, 1, &cbuffer_view);
-                }
             }
 
             // -----------------
@@ -1317,34 +1256,20 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             {
                 for (int y = 0; y < g_tilemap.height; y++) {
                     for (int x = 0; x < g_tilemap.width; x++) {
-                        Vec2f coordinate = {(f32)x, f32(y)};
-                        Tile tile = tilemap_data[x + (y * g_tilemap.width)];
-                        Texture texture;
-                        if (tile.type == 0) {
-                            texture = grass_tile;
-                        }
-                        else if (tile.type == 1) {
-                            texture = sand_tile;
-                        }
-                        else if (tile.type == 2) {
-                            texture = rock_tile;
-                        }
-
-                        DrawTilemapTile(texture.resource_view, coordinate);
-                    }
-                }
-
-                 for (int y = 0; y < g_tilemap.height; y++) {
-                    for (int x = 0; x < g_tilemap.width; x++) {
-                        Vec2f coordinate = {(f32)x, f32(y)};
-                        DrawTilemapTile(tile_grid.resource_view, coordinate);
+                        // Vec2f coordinate = {(f32)x, f32(y)};
+                        // Tile tile = tilemap_data[x + (y * g_tilemap.width)];
+                        // DrawTilemapTile(texture.resource_view, coordinate);
                     }
                 }
             }
 
             if (CursorOverTilemap()) {
-                DrawTilemapTile(selector_tile.resource_view, {(f32)frame_input.mouse_tilemap_x, (f32)frame_input.mouse_tilemap_y});
+                // DrawTilemapTile(selector_tile.resource_view, {(f32)frame_input.mouse_tilemap_x, (f32)frame_input.mouse_tilemap_y});
             }
+
+            BufferRectangle2d({0.5f, 0.5f});
+            BufferRectangle2d({0.25f, -0.25f});
+            DrawBufferedRectangle2ds(tile_atlas_01.resource_view);
 
             DrawLineOnScreen({-0.025f, 0.0f}, {0.025f, 0.0f}, 1.0f, {1.0f, 1.0f, 1.0f});
             DrawLineOnScreen({0.0f, -0.025f}, {0.0f, 0.025f}, 1.0f, {1.0f, 1.0f, 1.0f});
@@ -1713,44 +1638,52 @@ Vec2f TilemapCoordsToIsometricScreenSpace(Vec2f tilemap_coord) {
     return result;
 }
 
-void DrawTilemapTile(ID3D11ShaderResourceView* texture, Vec2f coordinate) {
-    // Constant buffer part
-    D3D11_MAPPED_SUBRESOURCE mappedResource = {};
-    HRESULT hr = deviceContext->Map(cbuffer_model, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
-    if (FAILED(hr)) {
-        ErrorMessageAndBreak((char*)"deviceContext->Map() ModelBufferType failed!");
-    }
-
-    Vec2f screen_coord = TilemapCoordsToIsometricScreenSpace(coordinate);
-    DirectX::XMMATRIX translation = DirectX::XMMatrixTranslation(screen_coord.x, screen_coord.y, 0.0f);
-
-    auto model_matrix = DirectX::XMMatrixIdentity();
-    model_matrix = XMMatrixMultiply(model_matrix, translation);
-
-    ModelBufferType modelBuffer = {
-        .modelMatrix = DirectX::XMMatrixTranspose(model_matrix),
-    };
-
-    ModelBufferType* model_data_ptr = (ModelBufferType*)mappedResource.pData;
-    model_data_ptr->modelMatrix = modelBuffer.modelMatrix;
-    deviceContext->Unmap(cbuffer_model, 0);
-    deviceContext->VSSetConstantBuffers(BUFFER_SLOT_MODEL, 1, &cbuffer_model);
-
-    // Shader part
-    deviceContext->IASetInputLayout(tilemap_tile_input_layout);
+void DrawBufferedRectangle2ds(ID3D11ShaderResourceView* texture) {
+    UINT stride = sizeof(TilemapTileVertex);
+    UINT offset = 0;
+    deviceContext->IASetVertexBuffers(0, 1, &rectangle_2d_vertex_buffer, &stride, &offset);
+    deviceContext->IASetInputLayout(rectangle_2d_input_layout);
     deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-    deviceContext->VSSetShader(tilemap_tile_vertex_shader, nullptr, 0);
-    deviceContext->PSSetShader(tilemap_tile_pixel_shader, nullptr, 0);
+    deviceContext->VSSetShader(rectangle_2d_vertex_shader, nullptr, 0);
+    deviceContext->PSSetShader(rectangle_2d_pixel_shader, nullptr, 0);
 
     deviceContext->PSSetShaderResources(0, 1, &texture);
     deviceContext->PSSetSamplers(0, 1, &g_sampler);
 
-    UINT stride = sizeof(TilemapTileVertex);
-    UINT offset = 0;
-    deviceContext->IASetVertexBuffers(0, 1, &tilemap_tile_vertex_buffer, &stride, &offset);
-    deviceContext->Draw(6, 0);
+    deviceContext->Draw(buffered_rectangle_2d_vertex_count, 0);
     g_window.frame_draw_calls++;
+    buffered_rectangle_2d_vertex_count = 0;
+}
+
+void BufferRectangle2d(Vec2f offset) {
+    TilemapTileVertex vertices[] = {
+        // Top Right
+        { DirectX::XMFLOAT4( 0.5f + offset.x,  0.5f + offset.y, 0.0f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 0.0f) },
+        // Bottom Left
+        { DirectX::XMFLOAT4(-0.5f + offset.x, -0.5f + offset.y, 0.0f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 1.0f) },
+        // Top Left
+        { DirectX::XMFLOAT4(-0.5f + offset.x,  0.5f + offset.y, 0.0f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 0.0f) },
+
+        // Bottom Right
+        { DirectX::XMFLOAT4( 0.5f + offset.x, -0.5f + offset.y, 0.0f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 1.0f) },
+        // Bottom Left
+        { DirectX::XMFLOAT4(-0.5f + offset.x, -0.5f + offset.y, 0.0f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(0.0f, 1.0f) },
+        // Top Right
+        { DirectX::XMFLOAT4( 0.5f + offset.x,  0.5f + offset.y, 0.0f, 1.0f), DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), DirectX::XMFLOAT2(1.0f, 0.0f) }
+    };
+
+    D3D11_MAPPED_SUBRESOURCE mappedResource;
+    HRESULT hr = deviceContext->Map(rectangle_2d_vertex_buffer, 0, D3D11_MAP_WRITE_NO_OVERWRITE, 0, &mappedResource);
+    if (FAILED(hr)) {
+        ErrorMessageAndBreak((char*)"Failed to map vertex buffer!");
+    }
+
+    size_t offsetInBytes = buffered_rectangle_2d_vertex_count * sizeof(TilemapTileVertex);
+    memcpy((byte*)mappedResource.pData + offsetInBytes, vertices, sizeof(vertices));
+
+    deviceContext->Unmap(rectangle_2d_vertex_buffer, 0);
+    buffered_rectangle_2d_vertex_count += 6;
 }
 
 unsigned char* LoadFileToPtr(wchar_t* filename, size_t* get_file_size) {
